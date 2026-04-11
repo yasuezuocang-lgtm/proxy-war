@@ -106,8 +106,8 @@ async function main() {
   await client.login(config.discord.token);
   console.log(`  Botログイン: ${client.user!.tag}`);
 
-  const guild = await client.guilds.fetch(config.discord.guildId);
-  console.log(`  サーバー: ${guild.name}`);
+  const guild = await client.guilds.fetch({ guild: config.discord.guildId, withCounts: false });
+  console.log(`  サーバー: ${guild.name} (${guild.id})`);
   console.log();
 
   // チャンネルキャッシュを取得

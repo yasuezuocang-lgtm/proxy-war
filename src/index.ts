@@ -12,7 +12,7 @@ async function main() {
   const llm = await createLLMClient(config);
   console.log(`LLM: ${config.llm.provider} (${config.llm.model})`);
 
-  const client = await startBot(config);
+  const client = await startBot(config, llm);
 
   // graceful shutdown
   const shutdown = async () => {
