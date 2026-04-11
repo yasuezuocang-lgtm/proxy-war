@@ -18,7 +18,7 @@ export class DebateEngine {
     talkChannel: TextChannel,
     onComplete: () => Promise<void>
   ): Promise<void> {
-    session.phase = "talking";
+    session.globalPhase = "talking";
 
     const modeLabel = session.mode === "fight" ? "⚔️ 喧嘩モード" : "💬 通常モード";
     await talkChannel.send(

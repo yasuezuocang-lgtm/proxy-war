@@ -7,7 +7,7 @@ export class JudgeEngine {
   constructor(private llm: LLMClient) {}
 
   async judge(session: Session, talkChannel: TextChannel): Promise<void> {
-    session.phase = "judging";
+    session.globalPhase = "judging";
 
     await talkChannel.send("⚖️ **審判AIが判定中...**");
 
@@ -24,7 +24,7 @@ export class JudgeEngine {
       await this.judgeNormalMode(session, talkChannel, dialogueText);
     }
 
-    session.phase = "finished";
+    session.globalPhase = "finished";
   }
 
   private async judgeFightMode(
@@ -50,7 +50,7 @@ export class JudgeEngine {
     } catch {
       // JSONパース失敗時はテキストそのまま返す
       await channel.send(`⚖️ **審判結果:**\n${response.content}`);
-      session.phase = "finished";
+      session.globalPhase = "finished";
       return;
     }
 
@@ -100,7 +100,7 @@ export class JudgeEngine {
       parsed = JSON.parse(jsonMatch?.[0] || "{}");
     } catch {
       await channel.send(`💡 **対話のまとめ:**\n${response.content}`);
-      session.phase = "finished";
+      session.globalPhase = "finished";
       return;
     }
 
@@ -114,6 +114,6 @@ export class JudgeEngine {
       await channel.send(`🧠 **Wisdom Engine:**\n${parsed.wisdom}`);
     }
 
-    session.phase = "finished";
+    session.globalPhase = "finished";
   }
 }

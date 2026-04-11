@@ -102,8 +102,6 @@ async function handleDM(
 ) {
   const text = message.content.trim();
   const { sessions, input, config } = deps;
-
-  // セッションキーは共有サーバーのGuild ID
   const sessionKey = config.talkGuildId;
 
   // コマンド検出
@@ -116,47 +114,72 @@ async function handleDM(
   const session = sessions.getOrCreate(sessionKey);
   const sideInput = sessions.getSide(session, side);
 
-  const inputPhase = side === "A" ? "input_a" : "input_b";
-  const confirmPhase = side === "A" ? "confirm_a" : "confirm_b";
-
-  if (session.phase === "idle" || session.phase === inputPhase) {
-    session.phase = inputPhase;
-    const result = await input.addRawInput(sideInput, text);
-    await message.reply(result.reply);
-
-    if (sideInput.summary) {
-      session.phase = confirmPhase;
-    }
-  } else if (session.phase === confirmPhase) {
-    const result = await input.handleConfirmation(sideInput, text);
-    await message.reply(result.reply);
-
-    if (result.phaseComplete && sessions.bothConfirmed(session)) {
-      session.phase = "ready";
-      deps.storage.save(session.id, {
-        sideA: session.sideA,
-        sideB: session.sideB,
-      });
-
-      // 両方に通知
-      await message.reply("相手側も準備完了！#talk で代理対話を開始します...");
-      await notifyOtherSide(side, deps, "相手側も準備完了！代理対話を開始します...");
-
-      // 自動的に対話開始
-      await startDebate(session, deps);
-    }
-  } else if (session.phase === "talking") {
+  // グローバルフェーズのチェック
+  if (session.globalPhase === "talking") {
     await message.reply("現在Bot同士が対話中です。共有サーバーの #talk をご覧ください。");
-  } else if (session.phase === "finished") {
+    return;
+  }
+  if (session.globalPhase === "judging") {
+    await message.reply("審判AIが判定中です。少々お待ちください。");
+    return;
+  }
+  if (session.globalPhase === "finished") {
     await message.reply(
       "前回のセッションは終了しています。\n新しく始めるには「話し合おう」や「喧嘩」と送ってください。"
     );
-  } else {
-    // 相手側の入力フェーズ中でも入力を蓄積
-    sideInput.rawMessages.push(text);
-    await message.reply(
-      "メッセージを受け取りました。引き続き思っていることを書いてください。"
-    );
+    return;
+  }
+
+  // 各側のフェーズで独立処理（A/B同時進行可能）
+  switch (sideInput.phase) {
+    case "waiting": {
+      // まだこの側は入力を始めていない → 入力開始
+      sideInput.phase = "inputting";
+      const result = await input.addRawInput(sideInput, text);
+      await message.reply(result.reply);
+      if (sideInput.summary) {
+        sideInput.phase = "confirming";
+      }
+      break;
+    }
+
+    case "inputting": {
+      const result = await input.addRawInput(sideInput, text);
+      await message.reply(result.reply);
+      if (sideInput.summary) {
+        sideInput.phase = "confirming";
+      }
+      break;
+    }
+
+    case "confirming": {
+      const result = await input.handleConfirmation(sideInput, text);
+      await message.reply(result.reply);
+
+      if (result.phaseComplete) {
+        sideInput.phase = "confirmed";
+
+        // 両方確定したら対話開始
+        if (sessions.bothConfirmed(session)) {
+          deps.storage.save(session.id, {
+            sideA: session.sideA,
+            sideB: session.sideB,
+          });
+
+          await message.reply("相手側も準備完了！ #talk で代理対話を開始します...");
+          await notifyOtherSide(side, deps, "相手側も準備完了！代理対話を開始します...");
+          await startDebate(session, deps);
+        } else {
+          await message.reply("あなたの準備は完了です。相手側の入力を待っています...");
+        }
+      }
+      break;
+    }
+
+    case "confirmed": {
+      await message.reply("あなたの入力は確定済みです。相手側の準備を待っています...");
+      break;
+    }
   }
 }
 
@@ -190,15 +213,15 @@ async function executeCommand(
   switch (command.type) {
     case "fight": {
       const session = deps.sessions.create(sessionKey, "fight");
-      const myPhase = side === "A" ? "input_a" : "input_b";
-      session.phase = myPhase;
+      // この側の入力を開始
+      const sideInput = deps.sessions.getSide(session, side);
+      sideInput.phase = "inputting";
       await message.reply(
         "⚔️ **喧嘩モード** を開始します！\n\n" +
           "まず本音を自由に書いてください。\n" +
           "その後「ゴール:〇〇」で議論のゴールを設定してください。\n\n" +
           "※ 相手にもBotへDMで本音を送るよう伝えてください。"
       );
-      // 相手側にも通知
       await notifyOtherSide(side, deps,
         "⚔️ 相手が **喧嘩モード** を開始しました！\n私にDMで本音を自由に書いてください。\n「ゴール:〇〇」でゴールも設定できます。"
       );
@@ -207,8 +230,8 @@ async function executeCommand(
 
     case "start": {
       const session = deps.sessions.create(sessionKey, "normal");
-      const myPhase = side === "A" ? "input_a" : "input_b";
-      session.phase = myPhase;
+      const sideInput = deps.sessions.getSide(session, side);
+      sideInput.phase = "inputting";
       await message.reply(
         "💬 **通常モード** を開始します。\n\n" +
           "思っていること、感じていることを自由に書いてください。\n" +
@@ -246,8 +269,6 @@ async function notifyOtherSide(
   deps: Deps,
   text: string
 ) {
-  // 相手側のBotからDMを送る機能は、相手のユーザーIDが必要
-  // 現段階では共有サーバーの #talk に通知する
   try {
     const talkChannel = await findTalkChannel(deps);
     if (talkChannel) {
@@ -260,7 +281,6 @@ async function notifyOtherSide(
 }
 
 async function findTalkChannel(deps: Deps): Promise<TextChannel | null> {
-  // Bot Aから共有サーバーを取得
   try {
     const guild = await deps.clientA.guilds.fetch({
       guild: deps.config.talkGuildId,

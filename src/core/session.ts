@@ -1,17 +1,21 @@
-export type SessionPhase =
-  | "idle"
-  | "input_a"        // A側が本音を入力中
-  | "input_b"        // B側が本音を入力中
-  | "confirm_a"      // A側の要約確認中
-  | "confirm_b"      // B側の要約確認中
-  | "ready"          // 両者の入力完了、対話準備OK
-  | "talking"        // Bot同士が対話中
-  | "judging"        // 審判が判定中
-  | "finished";      // 判定完了
+/** 各側の入力フェーズ（A/B独立で進む） */
+export type SidePhase =
+  | "waiting"       // セッション開始待ち or まだ何も送っていない
+  | "inputting"     // 本音を入力中
+  | "confirming"    // AIの要約を確認中
+  | "confirmed";    // 要約を承認済み
+
+/** セッション全体のフェーズ（両者に影響するグローバル状態） */
+export type GlobalPhase =
+  | "preparing"     // 入力フェーズ（A/Bそれぞれ独立で進行中）
+  | "talking"       // Bot同士が対話中
+  | "judging"       // 審判が判定中
+  | "finished";     // 判定完了
 
 export type SessionMode = "normal" | "fight";
 
 export interface SideInput {
+  phase: SidePhase;
   rawMessages: string[];          // ユーザーが投入した生テキスト
   structured: string | null;      // AIが構造化した内容
   summary: string | null;         // AIが生成した要約
@@ -39,7 +43,7 @@ export interface JudgmentResult {
 export interface Session {
   id: string;
   guildId: string;
-  phase: SessionPhase;
+  globalPhase: GlobalPhase;
   mode: SessionMode;
   sideA: SideInput;
   sideB: SideInput;
@@ -51,6 +55,7 @@ export interface Session {
 
 function createEmptySideInput(): SideInput {
   return {
+    phase: "waiting",
     rawMessages: [],
     structured: null,
     summary: null,
@@ -69,7 +74,7 @@ export class SessionManager {
     const session: Session = {
       id,
       guildId,
-      phase: "idle",
+      globalPhase: "preparing",
       mode,
       sideA: createEmptySideInput(),
       sideB: createEmptySideInput(),
@@ -96,10 +101,6 @@ export class SessionManager {
 
   delete(guildId: string): void {
     this.sessions.delete(guildId);
-  }
-
-  isInputPhase(session: Session): boolean {
-    return ["input_a", "input_b", "confirm_a", "confirm_b"].includes(session.phase);
   }
 
   bothConfirmed(session: Session): boolean {
