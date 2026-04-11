@@ -3,12 +3,14 @@ export type SidePhase =
   | "waiting"       // セッション開始待ち or まだ何も送っていない
   | "inputting"     // 本音を入力中
   | "confirming"    // AIの要約を確認中
+  | "choosing"      // モード選択中（喧嘩 or 話し合い）
   | "confirmed";    // 要約を承認済み
 
 /** セッション全体のフェーズ（両者に影響するグローバル状態） */
 export type GlobalPhase =
   | "preparing"     // 入力フェーズ（A/Bそれぞれ独立で進行中）
   | "talking"       // Bot同士が対話中
+  | "hearing"       // ヒアリングタイム（対話一時停止中）
   | "judging"       // 審判が判定中
   | "finished";     // 判定完了
 
@@ -40,6 +42,15 @@ export interface JudgmentResult {
   wisdom: string;
 }
 
+/** ヒアリングリクエスト（対話中に依頼人に確認が必要な情報） */
+export interface HearingRequest {
+  side: "A" | "B";                 // 質問される側
+  question: string;                // 依頼人への質問
+  context: string;                 // 相手が言ったこと（なぜ聞く必要があるか）
+  resolved: boolean;
+  answer: string | null;
+}
+
 export interface Session {
   id: string;
   guildId: string;
@@ -50,6 +61,9 @@ export interface Session {
   dialogue: DialogueTurn[];
   maxTurns: number;
   judgment: JudgmentResult | null;
+  topic: string | null;            // テーマ（相手側への通知用）
+  notifiedOtherSide: boolean;      // 相手側に通知済みか
+  hearing: HearingRequest | null;  // 現在のヒアリングリクエスト
   createdAt: number;
 }
 
@@ -81,6 +95,9 @@ export class SessionManager {
       dialogue: [],
       maxTurns: mode === "fight" ? 10 : 6,
       judgment: null,
+      topic: null,
+      notifiedOtherSide: false,
+      hearing: null,
       createdAt: Date.now(),
     };
     this.sessions.set(guildId, session);

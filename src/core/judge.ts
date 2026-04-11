@@ -35,11 +35,14 @@ export class JudgeEngine {
     const goalInfo =
       `A側のゴール: ${session.sideA.goal || "未設定"}\nB側のゴール: ${session.sideB.goal || "未設定"}`;
 
+    const contextA = session.sideA.systemPrompt || session.sideA.structured || "";
+    const contextB = session.sideB.systemPrompt || session.sideB.structured || "";
+
     const response = await this.llm.chat([
       { role: "system", content: judgePrompt("fight") },
       {
         role: "user",
-        content: `## 議論のゴール\n${goalInfo}\n\n## 議論の全文\n${dialogueText}`,
+        content: `## 議論のゴール\n${goalInfo}\n\n## A側の背景\n${contextA}\n\n## B側の背景\n${contextB}\n\n## 議論の全文\n${dialogueText}`,
       },
     ]);
 
@@ -77,9 +80,15 @@ export class JudgeEngine {
 
     await channel.send(`${winnerText}\n\n${result.summary || ""}`);
 
+    // ZOPA
+    const zopa = (result as any).zopa;
+    if (zopa) {
+      await channel.send(`🤝 **落とし所:**\n${zopa}`);
+    }
+
     // Wisdom
     if (result.wisdom) {
-      await channel.send(`\n🧠 **Wisdom Engine:**\n${result.wisdom}`);
+      await channel.send(`🧠 **Wisdom Engine:**\n${result.wisdom}`);
     }
   }
 
@@ -89,9 +98,15 @@ export class JudgeEngine {
     dialogueText: string
   ): Promise<void> {
     // 通常モードではWisdom Engineの洞察を提供
+    const contextA = session.sideA.systemPrompt || session.sideA.structured || "";
+    const contextB = session.sideB.systemPrompt || session.sideB.structured || "";
+
     const response = await this.llm.chat([
       { role: "system", content: judgePrompt("normal") },
-      { role: "user", content: `## 対話の全文\n${dialogueText}` },
+      {
+        role: "user",
+        content: `## A側の背景\n${contextA}\n\n## B側の背景\n${contextB}\n\n## 対話の全文\n${dialogueText}`,
+      },
     ]);
 
     let parsed: { summary?: string; insights?: string; wisdom?: string };
@@ -106,6 +121,10 @@ export class JudgeEngine {
 
     if (parsed.summary) {
       await channel.send(`📝 **対話のまとめ:**\n${parsed.summary}`);
+    }
+    const zopa = (parsed as any).zopa;
+    if (zopa) {
+      await channel.send(`🤝 **落とし所:**\n${zopa}`);
     }
     if (parsed.insights) {
       await channel.send(`💡 **両者へのアドバイス:**\n${parsed.insights}`);

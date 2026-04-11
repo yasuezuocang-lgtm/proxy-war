@@ -1,6 +1,6 @@
 import type { LLMClient } from "../llm/provider.js";
-import type { Session, SideInput } from "./session.js";
-import { STRUCTURIZE_PROMPT, SUMMARY_PROMPT } from "../llm/prompts.js";
+import type { SideInput } from "./session.js";
+import { SLOT_EXTRACT_PROMPT, PROBE_PROMPT, BATTLE_BRIEF_PROMPT, APPEND_PROMPT } from "../llm/prompts.js";
 
 export interface InputResult {
   reply: string;
@@ -10,115 +10,135 @@ export interface InputResult {
 export class InputProcessor {
   constructor(private llm: LLMClient) {}
 
-  /** 第1段階: 自由入力を受け取って蓄積 */
+  /**
+   * 自由入力 → スロット自動抽出 → 不足があれば質問、十分ならブリーフィング
+   */
   async addRawInput(
     side: SideInput,
     message: string
   ): Promise<InputResult> {
     side.rawMessages.push(message);
 
-    // 短いメッセージが連続する場合は蓄積を促す
     const totalLength = side.rawMessages.join("").length;
-    if (totalLength < 30 && side.rawMessages.length < 3) {
+    if (totalLength < 10) {
       return {
-        reply: "なるほど。もっと教えてください。思っていること、全部吐き出して大丈夫です。",
+        reply: "もうちょい教えて。何があった？",
         phaseComplete: false,
       };
     }
 
-    // 構造化
-    const allInput = side.rawMessages.join("\n");
-    const structured = await this.llm.chat([
-      { role: "system", content: STRUCTURIZE_PROMPT },
-      { role: "user", content: allInput },
-    ]);
-    side.structured = structured.content;
+    // 初回: 全体分析 / 2回目以降: 追記
+    if (!side.structured) {
+      const allInput = side.rawMessages.join("\n");
+      const extracted = await this.llm.chat([
+        { role: "system", content: SLOT_EXTRACT_PROMPT },
+        { role: "user", content: allInput },
+      ]);
+      side.structured = extracted.content;
+    } else {
+      const updated = await this.llm.chat([
+        { role: "system", content: APPEND_PROMPT },
+        { role: "user", content: `【現在の分析】\n${side.structured}\n\n【依頼人の追加発言】\n${message}` },
+      ]);
+      side.structured = updated.content;
+    }
 
-    // 要約と深掘り質問を生成
-    const summaryResponse = await this.llm.chat([
-      { role: "system", content: SUMMARY_PROMPT },
-      { role: "user", content: structured.content },
-    ]);
-    side.summary = summaryResponse.content;
+    // 不足スロットがある & まだ質問できる → 質問生成
+    if (this.hasSignificantGaps(side.structured) && side.followUpCount < 3) {
+      const probe = await this.llm.chat([
+        { role: "system", content: PROBE_PROMPT },
+        { role: "user", content: `依頼人の情報:\n${side.structured}` },
+      ]);
+      side.followUpCount++;
+      return {
+        reply: probe.content,
+        phaseComplete: false,
+      };
+    }
 
-    return {
-      reply: summaryResponse.content,
-      phaseComplete: false, // 確認を待つ
-    };
+    // 情報十分 → 戦闘ブリーフィング
+    return this.generateBrief(side);
   }
 
-  /** 第2段階: 要約の確認・深掘りへの回答を処理 */
+  /**
+   * 確認フェーズ: はいで確定、追加情報があれば再分析
+   */
   async handleConfirmation(
     side: SideInput,
     message: string
   ): Promise<InputResult> {
     const lower = message.trim().toLowerCase();
-    const isConfirm =
-      lower === "はい" ||
-      lower === "ok" ||
-      lower === "おk" ||
-      lower === "いいよ" ||
-      lower === "うん" ||
-      lower === "合ってる" ||
-      lower === "yes" ||
-      lower === "y";
-
-    if (isConfirm) {
+    if (lower === "はい" || lower === "yes" || lower === "ok") {
       side.confirmed = true;
       side.systemPrompt = this.buildSystemPrompt(side);
-      return {
-        reply:
-          "了解しました！あなたの気持ち、しっかり受け取りました。\n相手側の準備が整い次第、代理対話を始めます。",
-        phaseComplete: true,
-      };
+      return { reply: "了解、これで行く。", phaseComplete: true };
     }
 
     // 追加情報として扱う
-    if (side.followUpCount < 3) {
+    side.rawMessages.push(message);
+
+    if (side.followUpCount < 5) {
       side.followUpCount++;
-      side.rawMessages.push(message);
 
-      // 再構造化
-      const allInput = side.rawMessages.join("\n");
-      const structured = await this.llm.chat([
-        { role: "system", content: STRUCTURIZE_PROMPT },
-        { role: "user", content: allInput },
+      // 追記モード: 既存分析に新情報を足す
+      const updated = await this.llm.chat([
+        { role: "system", content: APPEND_PROMPT },
+        { role: "user", content: `【現在の分析】\n${side.structured}\n\n【依頼人の追加発言】\n${message}` },
       ]);
-      side.structured = structured.content;
+      side.structured = updated.content;
 
-      const summaryResponse = await this.llm.chat([
-        { role: "system", content: SUMMARY_PROMPT },
-        { role: "user", content: structured.content },
-      ]);
-      side.summary = summaryResponse.content;
-
-      return {
-        reply: summaryResponse.content,
-        phaseComplete: false,
-      };
+      return this.generateBrief(side);
     }
 
-    // 3回深掘りしたら自動確定
+    // 上限 → 自動確定
     side.confirmed = true;
     side.systemPrompt = this.buildSystemPrompt(side);
+    return { reply: "OK、この内容で行く。", phaseComplete: true };
+  }
+
+  setGoal(side: SideInput, goal: string): string {
+    side.goal = goal;
+    return `ゴール:「${goal}」 これ勝ち取りにいく。`;
+  }
+
+  private async generateBrief(side: SideInput): Promise<InputResult> {
+    const brief = await this.llm.chat([
+      { role: "system", content: BATTLE_BRIEF_PROMPT },
+      { role: "user", content: side.structured! },
+    ]);
+    side.summary = brief.content;
+
     return {
-      reply:
-        "十分な情報が集まりました。この内容で代理対話を進めますね。\n相手側の準備が整い次第、開始します。",
-      phaseComplete: true,
+      reply: `${brief.content}\n\nこれで戦う。「はい」で確定、違うとこあれば送って`,
+      phaseComplete: false,
     };
   }
 
-  /** 喧嘩モード: ゴール設定 */
-  setGoal(side: SideInput, goal: string): string {
-    side.goal = goal;
-    return `ゴールを設定しました:「${goal}」\nこのゴールの達成を目指して代理Botが議論します。`;
-  }
-
   private buildSystemPrompt(side: SideInput): string {
-    let prompt = `## ユーザーの本音（構造化済み）\n${side.structured}`;
+    let prompt = `## 依頼人の情報（スロット分析）\n${side.structured}`;
     if (side.goal) {
-      prompt += `\n\n## 議論のゴール\n${side.goal}`;
+      prompt += `\n\n## 勝ち取るゴール\n${side.goal}`;
     }
     return prompt;
+  }
+
+  /**
+   * 重要スロットに不明/未確認があるかチェック
+   * 事実・インタレスト・武器・弱点・NGワードを確認
+   */
+  private hasSignificantGaps(extracted: string): boolean {
+    const gapPatterns = [
+      /■インタレスト[^■]*不明/s,
+      /■武器[^■]*不明/s,
+      /■弱点[^■]*不明/s,
+      /■NGワード[^■]*未確認/s,
+    ];
+
+    let gapCount = 0;
+    for (const pattern of gapPatterns) {
+      if (pattern.test(extracted)) gapCount++;
+    }
+
+    return gapCount >= 2;
   }
 }
