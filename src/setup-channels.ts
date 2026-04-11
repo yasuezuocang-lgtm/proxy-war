@@ -2,31 +2,12 @@ import {
   Client,
   GatewayIntentBits,
   ChannelType,
-  PermissionFlagsBits,
   type Guild,
   type CategoryChannel,
 } from "discord.js";
 import { loadConfig } from "./config.js";
 
 const CATEGORY_NAME = "proxy-war";
-
-const CHANNELS = [
-  {
-    name: "control-a",
-    topic: "プレイヤーAの専用チャンネル — ここで本音をBotに伝えてください",
-    private: true,
-  },
-  {
-    name: "control-b",
-    topic: "プレイヤーBの専用チャンネル — ここで本音をBotに伝えてください",
-    private: true,
-  },
-  {
-    name: "talk",
-    topic: "代理Bot同士が議論を展開する共有チャンネル",
-    private: false,
-  },
-] as const;
 
 async function findOrCreateCategory(guild: Guild): Promise<CategoryChannel> {
   const existing = guild.channels.cache.find(
@@ -45,50 +26,30 @@ async function findOrCreateCategory(guild: Guild): Promise<CategoryChannel> {
   return category;
 }
 
-async function findOrCreateChannel(
+async function findOrCreateTalk(
   guild: Guild,
-  category: CategoryChannel,
-  ch: (typeof CHANNELS)[number]
+  category: CategoryChannel
 ) {
   const existing = guild.channels.cache.find(
     (c) =>
       c.type === ChannelType.GuildText &&
-      c.name === ch.name &&
+      c.name === "talk" &&
       c.parentId === category.id
   );
 
   if (existing) {
-    console.log(`  #${ch.name} は既に存在します。`);
+    console.log("  #talk は既に存在します。");
     return existing;
   }
 
-  const permissionOverwrites = ch.private
-    ? [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: guild.client.user!.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        },
-      ]
-    : [];
-
   const channel = await guild.channels.create({
-    name: ch.name,
+    name: "talk",
     type: ChannelType.GuildText,
     parent: category,
-    topic: ch.topic,
-    permissionOverwrites,
+    topic: "代理Bot同士が議論を展開する共有チャンネル",
   });
 
-  const visibility = ch.private ? "(非公開)" : "(公開)";
-  console.log(`  #${ch.name} を作成しました ${visibility}`);
+  console.log("  #talk を作成しました。");
   return channel;
 }
 
@@ -96,40 +57,40 @@ async function main() {
   const config = loadConfig();
 
   console.log();
-  console.log("── Discordチャンネル セットアップ ──");
+  console.log("── 共有サーバー チャンネルセットアップ ──");
   console.log();
 
+  // Bot Aでログインしてチャンネルを作成
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   });
 
-  await client.login(config.discord.token);
-  console.log(`  Botログイン: ${client.user!.tag}`);
+  await client.login(config.botA.token);
+  console.log(`  Bot A ログイン: ${client.user!.tag}`);
 
-  const guild = await client.guilds.fetch({ guild: config.discord.guildId, withCounts: false });
-  console.log(`  サーバー: ${guild.name} (${guild.id})`);
+  const guild = await client.guilds.fetch({
+    guild: config.talkGuildId,
+    withCounts: false,
+  });
+  console.log(`  共有サーバー: ${guild.name} (${guild.id})`);
   console.log();
 
-  // チャンネルキャッシュを取得
   await guild.channels.fetch();
 
   const category = await findOrCreateCategory(guild);
-
-  for (const ch of CHANNELS) {
-    await findOrCreateChannel(guild, category, ch);
-  }
+  await findOrCreateTalk(guild, category);
 
   console.log();
   console.log("  チャンネルセットアップ完了!");
   console.log();
   console.log("  次のステップ:");
-  console.log(
-    "    1. control-a / control-b に参加者を招待してください"
-  );
-  console.log(
-    '       → チャンネル設定 > 権限 > メンバーを追加'
-  );
-  console.log("    2. npm run dev でBotを起動");
+  console.log("    1. Bot B もこのサーバーに招待済みか確認");
+  console.log("    2. npm run dev で両Bot起動");
+  console.log();
+  console.log("  使い方:");
+  console.log("    ユーザーA → Bot A にDMで本音を送信");
+  console.log("    ユーザーB → Bot B にDMで本音を送信");
+  console.log("    → #talk で代理対話が自動開始");
   console.log();
 
   await client.destroy();

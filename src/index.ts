@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { startBot } from "./bot/client.js";
+import { startBots } from "./bot/client.js";
 import { createLLMClient } from "./llm/provider.js";
 
 async function main() {
@@ -12,12 +12,12 @@ async function main() {
   const llm = await createLLMClient(config);
   console.log(`LLM: ${config.llm.provider} (${config.llm.model})`);
 
-  const client = await startBot(config, llm);
+  const { clientA, clientB } = await startBots(config, llm);
 
-  // graceful shutdown
   const shutdown = async () => {
     console.log("\nシャットダウン中...");
-    client.destroy();
+    clientA.destroy();
+    clientB.destroy();
     process.exit(0);
   };
 

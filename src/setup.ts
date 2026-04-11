@@ -20,6 +20,11 @@ function header() {
   console.log("║   AI代理論破・審判Botシステム            ║");
   console.log("╚══════════════════════════════════════════╝");
   console.log();
+  console.log("  このシステムは2体のBotを使います:");
+  console.log("  - Bot A: ユーザーAの代理（DMで本音を受け取る）");
+  console.log("  - Bot B: ユーザーBの代理（DMで本音を受け取る）");
+  console.log("  - 共有サーバー: Bot同士が #talk で議論する場所");
+  console.log();
 }
 
 async function ask(question: string, fallback?: string): Promise<string> {
@@ -49,40 +54,66 @@ async function confirm(question: string): Promise<boolean> {
   return answer.toLowerCase() === "y";
 }
 
-async function setupDiscord(): Promise<{
-  token: string;
-  guildId: string;
-}> {
-  console.log("── Discord Bot 設定 ──");
-  console.log();
-  console.log("  Discord Developer Portal でBotを作成してください:");
+function botGuide() {
+  console.log("  Discord Developer Portal でBotを作成:");
   console.log("  https://discord.com/developers/applications");
   console.log();
-  console.log("  必要な権限 (Bot Permissions):");
-  console.log("    - Send Messages");
-  console.log("    - Read Message History");
-  console.log("    - Manage Channels");
-  console.log("    - View Channels");
+  console.log("  各Botに必要な設定:");
+  console.log("    Privileged Gateway Intents:");
+  console.log("      - Message Content Intent を有効化");
+  console.log("    Bot Permissions:");
+  console.log("      - Send Messages / Read Message History / View Channels");
+  console.log("    ※ Bot Aと Bot B は別々のアプリケーションとして作成");
   console.log();
-  console.log("  Privileged Gateway Intents:");
-  console.log("    - Message Content Intent を有効にしてください");
+}
+
+async function setupBots(): Promise<{
+  botA: { token: string; name: string };
+  botB: { token: string; name: string };
+}> {
+  console.log("── Bot A（ユーザーAの代理）──");
+  console.log();
+  botGuide();
+
+  const tokenA = await ask("Bot A のトークン");
+  const nameA = await ask("Bot A の表示名", "代理Bot A");
   console.log();
 
-  const token = await ask("Bot Token");
-  if (!token) {
-    console.log("  ⚠ トークンが空です。後で .env に直接設定できます。");
+  console.log("── Bot B（ユーザーBの代理）──");
+  console.log();
+
+  const tokenB = await ask("Bot B のトークン");
+  const nameB = await ask("Bot B の表示名", "代理Bot B");
+  console.log();
+
+  if (!tokenA || !tokenB) {
+    console.log("  ⚠ トークンが空のBotがあります。後で .env に直接設定できます。");
+    console.log();
   }
 
-  const guildId = await ask("サーバー(Guild) ID");
+  return {
+    botA: { token: tokenA || "", name: nameA },
+    botB: { token: tokenB || "", name: nameB },
+  };
+}
+
+async function setupTalkServer(): Promise<string> {
+  console.log("── 共有サーバー（Bot同士の対話場所）──");
+  console.log();
+  console.log("  Bot A と Bot B の両方をこのサーバーに招待してください。");
+  console.log("  ここに #talk チャンネルが作られ、代理対話が行われます。");
+  console.log();
+  console.log("  Guild IDの取得方法:");
+  console.log('    Discord > 設定 > 詳細設定 > 開発者モード ON');
+  console.log('    → サーバー右クリック > "サーバーIDをコピー"');
+  console.log();
+
+  const guildId = await ask("共有サーバーの Guild ID");
   if (!guildId) {
     console.log("  ⚠ Guild IDが空です。後で .env に直接設定できます。");
-    console.log(
-      '  取得方法: Discord設定 > 詳細設定 > 開発者モード ON → サーバー右クリック > "サーバーIDをコピー"'
-    );
   }
-
   console.log();
-  return { token: token || "", guildId: guildId || "" };
+  return guildId || "";
 }
 
 async function setupLLM(): Promise<{
@@ -120,25 +151,29 @@ async function setupLLM(): Promise<{
   return { provider, apiKey: apiKey || "", model };
 }
 
-function generateEncryptionKey(): string {
-  return randomBytes(32).toString("hex");
-}
-
 function writeEnvFile(config: {
-  discord: { token: string; guildId: string };
+  botA: { token: string; name: string };
+  botB: { token: string; name: string };
+  talkGuildId: string;
   llm: { provider: LLMProvider; apiKey: string; model: string };
   encryptionKey: string;
 }) {
   const apiKeyEntries = LLM_PROVIDERS.map((p) => {
-    const key =
-      p === config.llm.provider ? config.llm.apiKey : "";
+    const key = p === config.llm.provider ? config.llm.apiKey : "";
     const envName = `${p.toUpperCase()}_API_KEY`;
     return `${envName}=${key}`;
   }).join("\n");
 
-  const content = `# Discord
-DISCORD_TOKEN=${config.discord.token}
-DISCORD_GUILD_ID=${config.discord.guildId}
+  const content = `# Bot A (ユーザーAの代理Bot)
+BOT_A_TOKEN=${config.botA.token}
+BOT_A_NAME=${config.botA.name}
+
+# Bot B (ユーザーBの代理Bot)
+BOT_B_TOKEN=${config.botB.token}
+BOT_B_NAME=${config.botB.name}
+
+# 共有サーバー (Bot同士が対話する場所)
+TALK_GUILD_ID=${config.talkGuildId}
 
 # LLM Provider: ${LLM_PROVIDERS.join(" | ")}
 LLM_PROVIDER=${config.llm.provider}
@@ -171,19 +206,26 @@ async function main() {
     console.log();
   }
 
-  const discord = await setupDiscord();
+  const bots = await setupBots();
+  const talkGuildId = await setupTalkServer();
   const llm = await setupLLM();
-  const encryptionKey = generateEncryptionKey();
+  const encryptionKey = randomBytes(32).toString("hex");
 
-  writeEnvFile({ discord, llm, encryptionKey });
+  writeEnvFile({ ...bots, talkGuildId, llm, encryptionKey });
 
   console.log("── セットアップ完了 ──");
   console.log();
   console.log("  .env ファイルを作成しました。");
   console.log();
   console.log("  次のステップ:");
-  console.log("    1. npm run setup:channels  → Discordチャンネル自動作成");
-  console.log("    2. npm run dev             → Bot起動");
+  console.log("    1. Bot A と Bot B を共有サーバーに招待");
+  console.log("    2. npm run setup:channels  → #talk チャンネル自動作成");
+  console.log("    3. npm run dev             → 両Bot起動");
+  console.log();
+  console.log("  使い方:");
+  console.log("    - ユーザーA → Bot A にDMで本音を送る");
+  console.log("    - ユーザーB → Bot B にDMで本音を送る");
+  console.log("    - 両者の準備が整ったら #talk で代理対話が始まる");
   console.log();
 
   rl.close();

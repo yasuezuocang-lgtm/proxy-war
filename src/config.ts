@@ -32,16 +32,31 @@ const API_KEY_ENV: Record<LLMProvider, string> = {
 };
 
 export interface Config {
-  discord: {
+  botA: {
     token: string;
-    guildId: string;
+    name: string;
   };
+  botB: {
+    token: string;
+    name: string;
+  };
+  talkGuildId: string;
   llm: {
     provider: LLMProvider;
     apiKey: string;
     model: string;
   };
   encryptionKey: string;
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `${name} が設定されていません。npm run setup を実行してください。`
+    );
+  }
+  return value;
 }
 
 export function loadConfig(): Config {
@@ -53,42 +68,23 @@ export function loadConfig(): Config {
     );
   }
 
-  const token = process.env.DISCORD_TOKEN;
-  if (!token) {
-    throw new Error(
-      "DISCORD_TOKEN が設定されていません。npm run setup を実行してください。"
-    );
-  }
-
-  const guildId = process.env.DISCORD_GUILD_ID;
-  if (!guildId) {
-    throw new Error(
-      "DISCORD_GUILD_ID が設定されていません。npm run setup を実行してください。"
-    );
-  }
-
   const apiKeyEnv = API_KEY_ENV[provider];
-  const apiKey = process.env[apiKeyEnv];
-  if (!apiKey) {
-    throw new Error(
-      `${apiKeyEnv} が設定されていません。npm run setup を実行してください。`
-    );
-  }
-
-  const encryptionKey = process.env.ENCRYPTION_KEY;
-  if (!encryptionKey) {
-    throw new Error(
-      "ENCRYPTION_KEY が設定されていません。npm run setup を実行してください。"
-    );
-  }
 
   return {
-    discord: { token, guildId },
+    botA: {
+      token: requireEnv("BOT_A_TOKEN"),
+      name: process.env.BOT_A_NAME || "代理Bot A",
+    },
+    botB: {
+      token: requireEnv("BOT_B_TOKEN"),
+      name: process.env.BOT_B_NAME || "代理Bot B",
+    },
+    talkGuildId: requireEnv("TALK_GUILD_ID"),
     llm: {
       provider,
-      apiKey,
+      apiKey: requireEnv(apiKeyEnv),
       model: process.env.LLM_MODEL || DEFAULT_MODELS[provider],
     },
-    encryptionKey,
+    encryptionKey: requireEnv("ENCRYPTION_KEY"),
   };
 }
