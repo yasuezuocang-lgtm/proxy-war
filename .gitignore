@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.DS_Store
 *.js.map
 *.d.ts
 !src/**/*.d.ts
