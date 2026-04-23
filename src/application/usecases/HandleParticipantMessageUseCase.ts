@@ -2,6 +2,11 @@ import { DomainError } from "../../domain/errors/DomainError.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import {
+  buildHelpMessage,
+  isHelpCommand,
+  type HelpContext,
+} from "../services/HelpRegistry.js";
+import {
   ConfirmBriefUseCase,
   type ConfirmBriefOutput,
 } from "./ConfirmBriefUseCase.js";
@@ -31,6 +36,11 @@ export type ParticipantMessageResult =
       handledBy: "waiting";
       sessionId: string;
       reply: string;
+    }
+  | {
+      handledBy: "help";
+      sessionId: string | null;
+      reply: string;
     };
 
 export interface HandleParticipantMessageInput {
@@ -51,6 +61,22 @@ export class HandleParticipantMessageUseCase {
     input: HandleParticipantMessageInput
   ): Promise<ParticipantMessageResult> {
     const session = await this.sessionRepository.findActiveByGuildId(input.guildId);
+
+    if (isHelpCommand(input.message)) {
+      const ctx: HelpContext = {
+        sessionPhase: session?.phase ?? null,
+        participantPhase: session
+          ? session.getParticipant(input.side).phase
+          : null,
+        canAppeal: !!session && session.appealableSides.includes(input.side),
+      };
+      return {
+        handledBy: "help",
+        sessionId: session?.id ?? null,
+        reply: buildHelpMessage(ctx),
+      };
+    }
+
     if (!session) {
       const result = await this.submitInputUseCase.execute(input);
       return {

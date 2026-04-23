@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { startBots } from "./bot/client.js";
 import { createLLMClient } from "./llm/provider.js";
+import { EncryptedSessionRepository } from "./infrastructure/persistence/EncryptedSessionRepository.js";
 
 async function main() {
   console.log();
@@ -12,7 +13,14 @@ async function main() {
   const llm = await createLLMClient(config);
   console.log(`LLM: ${config.llm.provider} (${config.llm.model})`);
 
-  const { clientA, clientB } = await startBots(config, llm);
+  // SPEC §6.9 / P1-19: セッションは data/sessions/ に AES-256-GCM で暗号化永続化。
+  // 起動時に findActiveByGuildId がディスクから前回セッションを自動で読み戻すので、
+  // これを startBots に渡すことで「再起動後もセッションが生きている」を実現する。
+  const sessionRepository = new EncryptedSessionRepository({
+    encryptionKey: config.encryptionKey,
+  });
+
+  const { clientA, clientB } = await startBots(config, llm, sessionRepository);
 
   const shutdown = async () => {
     console.log("\nシャットダウン中...");

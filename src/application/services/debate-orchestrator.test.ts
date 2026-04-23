@@ -14,10 +14,13 @@ import type {
   AbsorbHearingAnswerInput,
   AgentTurnInput,
   AgentTurnResult,
-  ParticipantAgent,
+  DebateAgent,
+  HearingAnswerReview,
+  ReviewHearingAnswerInput,
   SuggestAppealInput,
 } from "../ports/ParticipantAgent.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
+import type { AgentPersonality } from "../../domain/entities/AgentContext.js";
 import type {
   AppendBriefInput,
   BriefInput,
@@ -115,39 +118,76 @@ class ScriptedAppealGateway implements ParticipantResponseGateway {
   }
 }
 
+// 新 DebateAgent<Side> をそのまま満たす。generateTurn（Legacy）は持たず、
+// opening/reply と absorb(Promise<void>) + getLastBrief でオーケストレータに繋がる。
 class FakeParticipantAgent<Side extends ParticipantSide>
-  implements ParticipantAgent<Side>
+  implements DebateAgent<Side>
 {
   readonly turns: string[] = [];
   readonly receivedBriefs: string[] = [];
   readonly receivedAppealInputs: SuggestAppealInput<Side>[] = [];
 
-  constructor(readonly side: Side) {}
+  readonly personality: AgentPersonality;
+  private readonly lastBriefs = new Map<string, StructuredBrief>();
+  private readonly memos: string[] = [];
 
-  async generateTurn(input: AgentTurnInput<Side>): Promise<AgentTurnResult> {
-    this.receivedBriefs.push(input.brief);
-    const message = `${this.side}の発言${input.turnIndex + 1}`;
-    this.turns.push(message);
-    return {
-      type: "message" as const,
-      message,
+  constructor(readonly side: Side) {
+    this.personality = {
+      id: `fake-${side.toLowerCase()}`,
+      label: `${side}代理（テスト）`,
+      promptSeed: "",
     };
+  }
+
+  async generateOpeningTurn(
+    input: AgentTurnInput<Side>
+  ): Promise<AgentTurnResult> {
+    return this.runTurn(input);
+  }
+
+  async generateReplyTurn(
+    input: AgentTurnInput<Side>
+  ): Promise<AgentTurnResult> {
+    return this.runTurn(input);
+  }
+
+  async absorbHearingAnswer(
+    input: AbsorbHearingAnswerInput<Side>
+  ): Promise<void> {
+    this.memos.push(input.answer);
+    this.lastBriefs.set(input.sessionId, {
+      structuredContext: `${input.currentStructuredContext}\n${input.answer}`,
+      summary: input.answer,
+    });
+  }
+
+  // デフォルト実装は追撃なし。追撃テスト用のサブクラスで override する。
+  async reviewHearingAnswer(
+    _input: ReviewHearingAnswerInput<Side>
+  ): Promise<HearingAnswerReview> {
+    return { type: "sufficient" };
+  }
+
+  getStrategyMemo(): string {
+    return this.memos.join("\n");
   }
 
   resetSession(): void {}
 
-  async absorbHearingAnswer(
-    input: AbsorbHearingAnswerInput<Side>
-  ): Promise<StructuredBrief> {
-    return {
-      structuredContext: `${input.currentStructuredContext}\n${input.answer}`,
-      summary: input.answer,
-    };
+  getLastBrief(sessionId: string): StructuredBrief | null {
+    return this.lastBriefs.get(sessionId) ?? null;
   }
 
   async suggestAppealPoints(input: SuggestAppealInput<Side>): Promise<string> {
     this.receivedAppealInputs.push(input);
     return `- ${this.side}代理からの提案（brief長=${input.brief.length}）`;
+  }
+
+  protected runTurn(input: AgentTurnInput<Side>): Promise<AgentTurnResult> {
+    this.receivedBriefs.push(input.brief);
+    const message = `${this.side}の発言${input.turnIndex + 1}`;
+    this.turns.push(message);
+    return Promise.resolve({ type: "message" as const, message });
   }
 }
 
@@ -221,17 +261,18 @@ test("ヒアリングが入っても同じ側の手番を消費しない", async
   await repository.save(session);
 
   class HearingAgent<Side extends ParticipantSide> extends FakeParticipantAgent<Side> {
-    override async generateTurn(
+    override async runTurn(
       input: AgentTurnInput<Side>
     ): Promise<AgentTurnResult> {
       if (this.side === "B" && input.conversation.length === 1) {
         return {
           type: "hearing" as const,
           question: "確認したい",
+          reason: "反論材料が武器リストにない",
         };
       }
 
-      return super.generateTurn(input);
+      return super.runTurn(input);
     }
   }
 
@@ -269,6 +310,307 @@ test("ヒアリングが入っても同じ側の手番を消費しない", async
     ["A", "B", "A"]
   );
   assert.match(messageGateway.talks.map((t) => t.message).join("\n"), /ヒアリングタイム — B側の依頼人に確認中/);
+
+  // SPEC H5: 依頼人へのヒアリングDMには「質問」と「確認したい理由」が含まれる
+  const hearingDm = messageGateway.dms.find(
+    (d) => d.side === "B" && /対話中に確認したいことが出た/.test(d.message)
+  );
+  assert.ok(hearingDm, "B側の依頼人にヒアリングDMが届いている");
+  assert.match(hearingDm.message, /確認したい/, "質問本文が含まれる");
+  assert.match(
+    hearingDm.message,
+    /【確認したい理由】/,
+    "理由のラベルがDM本文に含まれる"
+  );
+  assert.match(
+    hearingDm.message,
+    /反論材料が武器リストにない/,
+    "理由本文がDM本文に含まれる"
+  );
+});
+
+// SPEC H5: reason が空文字列（抽象質問のフォールバック等）なら
+// 理由ブロックは丸ごと省略して、今まで通りの DM になる
+test("reason が空なら確認したい理由ブロックはDMに現れない", async () => {
+  const repository = new InMemorySessionRepository();
+  const session = new Session({
+    id: "hearing-no-reason",
+    guildId: "guild-no-reason",
+    policy: new SessionPolicy({ maxTurns: 3, maxAppeals: 0 }),
+  });
+  session.phase = "ready";
+  session.getParticipant("A").phase = "ready";
+  session.getParticipant("B").phase = "ready";
+  session.getParticipant("A").brief.structuredContext = "Aの背景";
+  session.getParticipant("B").brief.structuredContext = "Bの背景";
+  await repository.save(session);
+
+  class NoReasonHearingAgent<
+    Side extends ParticipantSide
+  > extends FakeParticipantAgent<Side> {
+    override async runTurn(
+      input: AgentTurnInput<Side>
+    ): Promise<AgentTurnResult> {
+      if (this.side === "B" && input.conversation.length === 1) {
+        return {
+          type: "hearing" as const,
+          question: "確認したい",
+          reason: "   ",
+        };
+      }
+      return super.runTurn(input);
+    }
+  }
+
+  class AnsweringGateway implements ParticipantResponseGateway {
+    async waitForResponse(): Promise<string | null> {
+      return "追加事情";
+    }
+    async waitForAnyResponse(): Promise<AnyResponse | null> {
+      return null;
+    }
+  }
+
+  const messageGateway = new FakeMessageGateway();
+  const orchestrator = new DebateOrchestrator(
+    repository,
+    new SessionStateMachine(),
+    {
+      A: new NoReasonHearingAgent("A"),
+      B: new NoReasonHearingAgent("B"),
+    },
+    new FakeDebateLlmGateway(),
+    messageGateway,
+    new AnsweringGateway(),
+    0
+  );
+
+  await orchestrator.run(session.id);
+
+  const hearingDm = messageGateway.dms.find(
+    (d) => d.side === "B" && /対話中に確認したいことが出た/.test(d.message)
+  );
+  assert.ok(hearingDm);
+  assert.doesNotMatch(
+    hearingDm.message,
+    /【確認したい理由】/,
+    "reason が空白のみなら理由ブロックは出さない"
+  );
+});
+
+// SPEC §6.6 / P1-11（H2）: 浅い回答は追撃され、具体的な回答が返ったら対話再開する。
+// 最初の回答「よくわからない」→ 追撃質問 → 2回目「3月15日」→ 対話再開。
+test("浅いヒアリング回答は追撃されて、具体的な回答で対話が再開する（P1-11/H2）", async () => {
+  const repository = new InMemorySessionRepository();
+  const session = new Session({
+    id: "followup-session",
+    guildId: "guild-followup",
+    // maxHearingsPerSide=1 で、B 側の HEARING は1回だけに絞る。
+    // handleHearing 内の追撃は maxHearingFollowups の方で別枠管理される。
+    policy: new SessionPolicy({
+      maxTurns: 3,
+      maxAppeals: 0,
+      maxHearingsPerSide: 1,
+    }),
+  });
+  session.phase = "ready";
+  session.getParticipant("A").phase = "ready";
+  session.getParticipant("B").phase = "ready";
+  session.getParticipant("A").brief.structuredContext = "Aの背景";
+  session.getParticipant("B").brief.structuredContext = "Bの背景";
+  await repository.save(session);
+
+  // B 側のエージェントが第2ターンで HEARING を発火する。
+  // 1回目の回答「よくわからない」を浅いと判定して followup を返し、
+  // 2回目の回答「3月15日」で sufficient に切り替える。
+  class FollowupHearingAgent<
+    Side extends ParticipantSide
+  > extends FakeParticipantAgent<Side> {
+    private reviewCallCount = 0;
+
+    override async runTurn(
+      input: AgentTurnInput<Side>
+    ): Promise<AgentTurnResult> {
+      if (this.side === "B" && input.conversation.length === 1) {
+        return {
+          type: "hearing" as const,
+          question: "Aが言う連絡が来た話、実際いつ？",
+          reason: "反論材料が武器リストにない",
+        };
+      }
+      return super.runTurn(input);
+    }
+
+    override async reviewHearingAnswer(
+      input: ReviewHearingAnswerInput<Side>
+    ): Promise<HearingAnswerReview> {
+      this.reviewCallCount += 1;
+      if (this.reviewCallCount === 1) {
+        return {
+          type: "followup",
+          question: "何月何日に連絡が来た？",
+          reason: "日付の事実確認のため",
+        };
+      }
+      return { type: "sufficient" };
+    }
+  }
+
+  // 回答を順番に返す gateway（浅い→具体的）。
+  class ScriptedAnswerGateway implements ParticipantResponseGateway {
+    private readonly answers = ["よくわからない", "3月15日に連絡きた"];
+    async waitForResponse(): Promise<string | null> {
+      return this.answers.shift() ?? null;
+    }
+    async waitForAnyResponse(): Promise<AnyResponse | null> {
+      return null;
+    }
+  }
+
+  const messageGateway = new FakeMessageGateway();
+  const agentB = new FollowupHearingAgent("B");
+  const orchestrator = new DebateOrchestrator(
+    repository,
+    new SessionStateMachine(),
+    {
+      A: new FakeParticipantAgent("A"),
+      B: agentB,
+    },
+    new FakeDebateLlmGateway(),
+    messageGateway,
+    new ScriptedAnswerGateway(),
+    0,
+    2 // maxHearingFollowups
+  );
+
+  await orchestrator.run(session.id);
+
+  // B 側に HEARING DM が2通（初回 + 追撃1回）届いているはず。
+  const hearingDms = messageGateway.dms.filter(
+    (d) => d.side === "B" && /対話中に確認したいことが出た/.test(d.message)
+  );
+  assert.equal(hearingDms.length, 2, "初回＋追撃1回で合計2通のヒアリングDM");
+  assert.match(
+    hearingDms[0].message,
+    /実際いつ？/,
+    "1通目は最初の質問"
+  );
+  assert.match(
+    hearingDms[1].message,
+    /何月何日に連絡が来た/,
+    "2通目は追撃質問"
+  );
+
+  // 追撃アナウンスが #talk に出ている。
+  const talks = messageGateway.talks.map((t) => t.message).join("\n");
+  assert.match(talks, /追撃質問（1\/2）/, "追撃のカウンタが #talk に出る");
+  assert.match(talks, /ヒアリング完了 — 対話再開/, "最後は対話再開に戻る");
+
+  // B 代理の武器リストには両方の回答が積まれている（次ターンの反論材料）。
+  assert.match(agentB.getStrategyMemo(), /よくわからない/);
+  assert.match(agentB.getStrategyMemo(), /3月15日に連絡きた/);
+});
+
+// SPEC §6.6 / P1-11（H2）: 追撃は maxHearingFollowups で打ち切られる。
+// 回答が常に浅くても、上限を超える追撃はしない（ユーザー疲弊防止）。
+test("追撃は maxHearingFollowups で打ち切られる（P1-11/H2）", async () => {
+  const repository = new InMemorySessionRepository();
+  const session = new Session({
+    id: "followup-cap",
+    guildId: "guild-cap",
+    // 同じく maxHearingsPerSide=1 で B 側の HEARING を1回に絞る。
+    policy: new SessionPolicy({
+      maxTurns: 3,
+      maxAppeals: 0,
+      maxHearingsPerSide: 1,
+    }),
+  });
+  session.phase = "ready";
+  session.getParticipant("A").phase = "ready";
+  session.getParticipant("B").phase = "ready";
+  session.getParticipant("A").brief.structuredContext = "Aの背景";
+  session.getParticipant("B").brief.structuredContext = "Bの背景";
+  await repository.save(session);
+
+  // 常に followup を返し続けるエージェント。上限判定は orchestrator 側の責務。
+  class AlwaysFollowupAgent<
+    Side extends ParticipantSide
+  > extends FakeParticipantAgent<Side> {
+    override async runTurn(
+      input: AgentTurnInput<Side>
+    ): Promise<AgentTurnResult> {
+      if (this.side === "B" && input.conversation.length === 1) {
+        return {
+          type: "hearing" as const,
+          question: "最初の質問",
+          reason: "反論材料が足りない",
+        };
+      }
+      return super.runTurn(input);
+    }
+
+    override async reviewHearingAnswer(
+      _input: ReviewHearingAnswerInput<Side>
+    ): Promise<HearingAnswerReview> {
+      return {
+        type: "followup",
+        question: "さらに深掘りたい追撃質問",
+        reason: "まだ事実が薄い",
+      };
+    }
+  }
+
+  class AlwaysAnswerGateway implements ParticipantResponseGateway {
+    readonly calls: string[] = [];
+    async waitForResponse(side: "A" | "B"): Promise<string | null> {
+      this.calls.push(side);
+      return "浅い回答";
+    }
+    async waitForAnyResponse(): Promise<AnyResponse | null> {
+      return null;
+    }
+  }
+
+  const messageGateway = new FakeMessageGateway();
+  const agentB = new AlwaysFollowupAgent("B");
+  const answerGateway = new AlwaysAnswerGateway();
+  const orchestrator = new DebateOrchestrator(
+    repository,
+    new SessionStateMachine(),
+    {
+      A: new FakeParticipantAgent("A"),
+      B: agentB,
+    },
+    new FakeDebateLlmGateway(),
+    messageGateway,
+    answerGateway,
+    0,
+    1 // maxHearingFollowups=1 → 初回+追撃1回で打ち切り
+  );
+
+  await orchestrator.run(session.id);
+
+  const hearingDms = messageGateway.dms.filter(
+    (d) => d.side === "B" && /対話中に確認したいことが出た/.test(d.message)
+  );
+  assert.equal(
+    hearingDms.length,
+    2,
+    "初回質問 + 追撃1回の計2通で打ち切られる（上限=1）"
+  );
+  assert.equal(
+    answerGateway.calls.filter((s) => s === "B").length,
+    2,
+    "waitForResponse も2回で止まる（無限追撃にならない）"
+  );
+
+  const talks = messageGateway.talks.map((t) => t.message).join("\n");
+  assert.match(talks, /追撃質問（1\/1）/, "追撃1回目のアナウンスは出る");
+  assert.doesNotMatch(
+    talks,
+    /追撃質問（2\//,
+    "maxHearingFollowups=1 なので2回目の追撃は発火しない"
+  );
 });
 
 // 核となる不変条件:
@@ -834,4 +1176,123 @@ test("上告案内DMには代理人の異議材料提案が添えられ、brief 
     0,
     "勝者側の代理人には異議提案は要求されない"
   );
+});
+
+// SPEC §6.9 / P1-17: 最終審（または上告放棄）で敗者が確定したら、
+// 敗者だけに振り返りメッセージを DM で送る。
+// 勝者には送らず、引き分け時はどちらにも送らない。
+test("敗者が確定したらConsolationDMが敗者にだけ届く（P1-17）", async () => {
+  const repository = new InMemorySessionRepository();
+  const session = new Session({
+    id: "consolation-session",
+    guildId: "guild-consolation",
+    policy: new SessionPolicy({ maxTurns: 2, maxAppeals: 0 }),
+  });
+  session.phase = "ready";
+  session.getParticipant("A").phase = "ready";
+  session.getParticipant("B").phase = "ready";
+  session.getParticipant("A").brief.structuredContext = "Aの背景";
+  session.getParticipant("B").brief.structuredContext = "Bの本音:LOSER_CONTEXT_TOKEN";
+  await repository.save(session);
+
+  // 判決履歴を loserContext と一緒に受け取ったことを検証するためにキャプチャする。
+  class ConsolationCapturingGateway extends FakeDebateLlmGateway {
+    readonly calls: ConsolationInput[] = [];
+    override async generateConsolation(
+      input: ConsolationInput
+    ): Promise<string> {
+      this.calls.push(input);
+      return "今回は悔しいかもしれないが、次に活かせる観点がある。";
+    }
+  }
+
+  const messageGateway = new FakeMessageGateway();
+  const llmGateway = new ConsolationCapturingGateway();
+  const orchestrator = new DebateOrchestrator(
+    repository,
+    new SessionStateMachine(),
+    {
+      A: new FakeParticipantAgent("A"),
+      B: new FakeParticipantAgent("B"),
+    },
+    llmGateway,
+    messageGateway,
+    new FakeParticipantResponseGateway(),
+    0
+  );
+
+  await orchestrator.run(session.id);
+
+  // 敗者（B）に Consolation DM が届いている
+  const consolationDm = messageGateway.dms.find(
+    (d) => d.side === "B" && /最後にひとこと/.test(d.message)
+  );
+  assert.ok(consolationDm, "敗者（B）に Consolation DM が届く");
+  assert.match(
+    consolationDm.message,
+    /今回は悔しいかもしれないが、次に活かせる観点がある。/,
+    "LLM が生成した本文が DM に含まれる"
+  );
+
+  // 勝者（A）には Consolation DM は届かない
+  assert.ok(
+    !messageGateway.dms.some(
+      (d) => d.side === "A" && /最後にひとこと/.test(d.message)
+    ),
+    "勝者側にはConsolationは送らない"
+  );
+
+  // LLM には敗者の brief と判決履歴が渡される
+  assert.equal(llmGateway.calls.length, 1);
+  assert.match(llmGateway.calls[0].loserContext, /LOSER_CONTEXT_TOKEN/);
+  assert.equal(llmGateway.calls[0].judgmentHistory.length, 1);
+  assert.match(llmGateway.calls[0].judgmentHistory[0], /A側がやや優勢/);
+});
+
+// SPEC §6.9 / P1-17: 引き分け時は誰が「敗者」か決まっていないので
+// Consolation DM は送らない。
+test("引き分けでは誰にもConsolationDMを送らない（P1-17）", async () => {
+  const repository = new InMemorySessionRepository();
+  const session = new Session({
+    id: "draw-no-consolation",
+    guildId: "guild-draw-no-cons",
+    // maxAppeals=0 で draw でもそのまま finished に流れる
+    policy: new SessionPolicy({ maxTurns: 2, maxAppeals: 0 }),
+  });
+  session.phase = "ready";
+  session.getParticipant("A").phase = "ready";
+  session.getParticipant("B").phase = "ready";
+  session.getParticipant("A").brief.structuredContext = "Aの背景";
+  session.getParticipant("B").brief.structuredContext = "Bの背景";
+  await repository.save(session);
+
+  const messageGateway = new FakeMessageGateway();
+  const judgeGateway = new ScriptedJudgeLlmGateway([
+    makeJudgment({ winner: "draw", summary: "引き分け" }),
+  ]);
+  const orchestrator = new DebateOrchestrator(
+    repository,
+    new SessionStateMachine(),
+    {
+      A: new FakeParticipantAgent("A"),
+      B: new FakeParticipantAgent("B"),
+    },
+    judgeGateway,
+    messageGateway,
+    new FakeParticipantResponseGateway(),
+    0
+  );
+
+  await orchestrator.run(session.id);
+
+  // どちらの側にも Consolation DM は来ない
+  assert.ok(
+    !messageGateway.dms.some((d) => /最後にひとこと/.test(d.message)),
+    "引き分けではConsolationを一切送らない"
+  );
+
+  const saved = await repository.findById(session.id);
+  assert.ok(saved);
+  assert.equal(saved.phase, "finished");
+  assert.equal(saved.getCurrentRound().judgment?.winner, "draw");
 });

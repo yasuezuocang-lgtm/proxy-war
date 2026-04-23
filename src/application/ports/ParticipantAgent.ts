@@ -1,3 +1,4 @@
+import type { AgentPersonality } from "../../domain/entities/AgentContext.js";
 import type { StructuredBrief } from "./LlmGateway.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { Judgment } from "../../domain/entities/Judgment.js";
@@ -34,9 +35,11 @@ export interface AgentTurnInput<Side extends ParticipantSide> {
   turnIndex: number;
 }
 
+// SPEC §8.2 — 代理人エージェントが 1 ターンの末に出す結果。
+// hearing バリアントに reason を必須化しているのは SPEC H5（質問理由の併記）のため。
 export type AgentTurnResult =
   | { type: "message"; message: string }
-  | { type: "hearing"; question: string };
+  | { type: "hearing"; question: string; reason: string };
 
 export interface AbsorbHearingAnswerInput<Side extends ParticipantSide> {
   sessionId: string;
@@ -44,9 +47,76 @@ export interface AbsorbHearingAnswerInput<Side extends ParticipantSide> {
   answer: string;
 }
 
-// 前審の判定に対して、自側の brief を根拠に筋の通った異議の材料を提案するための入力。
-// judgment と dialogue は公開情報（審判AI経由）なので両側が見てよい。
-// ただし brief は必ず自側のもののみ（OwnBrief<Side> で強制）。
+// SPEC §6.6 / H2（追撃）用の入出力。
+// 直前に投げた質問と依頼人からの回答を代理人に見せ、
+// 「回答が十分か／追撃が要るか」を決めさせる。
+export interface ReviewHearingAnswerInput<Side extends ParticipantSide> {
+  sessionId: string;
+  currentStructuredContext: OwnBrief<Side>;
+  question: string;
+  answer: string;
+}
+
+export type HearingAnswerReview =
+  | { type: "sufficient" }
+  | { type: "followup"; question: string; reason: string };
+
+// SPEC §8.2 — 専属代理人エージェントの抽象。
+// A代理・B代理はそれぞれ独立した人格・記憶・戦術メモを持つ（§8.3）。
+// 同一クラスを side 切り替えで使い回さない。実装は AAgent / BAgent が独立クラス。
+export interface ParticipantAgent<
+  Side extends ParticipantSide = ParticipantSide
+> {
+  readonly side: Side;
+  readonly personality: AgentPersonality;
+  generateOpeningTurn(input: AgentTurnInput<Side>): Promise<AgentTurnResult>;
+  generateReplyTurn(input: AgentTurnInput<Side>): Promise<AgentTurnResult>;
+  absorbHearingAnswer(input: AbsorbHearingAnswerInput<Side>): Promise<void>;
+  // SPEC §6.6 / P1-11（H2）: 直近のヒアリング回答を見て「十分」か「追撃必要」かを決める。
+  // 追撃の場合は [HEARING:Q|R] と同等の具体性制約を満たした新しい質問を返す。
+  reviewHearingAnswer(
+    input: ReviewHearingAnswerInput<Side>
+  ): Promise<HearingAnswerReview>;
+  getStrategyMemo(): string;
+}
+
+export interface ParticipantAgents {
+  A: ParticipantAgent<"A">;
+  B: ParticipantAgent<"B">;
+}
+
+// DebateOrchestrator が実体として結線する代理人の契約（P1-6）。
+// SPEC §8.2 の ParticipantAgent<Side>（純粋な対話ターン契約）に、
+// オーケストレーション時に必要な周辺操作（異議材料提案・セッション破棄・
+// ヒアリング統合後の brief 取り出し）を拡張して追加する。
+//
+// ここで拡張メソッドを ParticipantAgent 本体に入れなかった理由:
+// - SPEC §8.2 の interface は「1 ターンの生成と記憶吸収」だけに絞られている
+// - 異議提案や session reset はセッション境界の運用で、対話のコア責務ではない
+// - getLastBrief は absorbHearingAnswer が Promise<void> になった後でも
+//   司会（orchestrator）が session.brief を更新できるようにする出口。
+//   agent が内部で appendBrief した結果を stash → ここで取り出す。
+export interface DebateAgent<Side extends ParticipantSide = ParticipantSide>
+  extends ParticipantAgent<Side> {
+  suggestAppealPoints(input: SuggestAppealInput<Side>): Promise<string>;
+  resetSession(sessionId: string): void;
+  getLastBrief(sessionId: string): StructuredBrief | null;
+}
+
+export interface DebateAgents {
+  A: DebateAgent<"A">;
+  B: DebateAgent<"B">;
+}
+
+// ---- 以下は旧インターフェース（DebateCoordinator 縮退完了まで併存） ----
+//
+// SPEC §8.2 の正本インターフェース（上の ParticipantAgent / AgentTurnResult）は
+// 新実装（AAgent / BAgent）が implements する。
+// Legacy 側は DebateOrchestrator 経由で AAgent / BAgent の互換メソッド
+// （generateTurn / resetSession / suggestAppealPoints / getLastBrief）を
+// 呼ぶ bot/client.ts の Adapter が使う。
+// generateDebateTurn は LlmGateway から既に撤去済み（P1-7）。
+
 export interface SuggestAppealInput<Side extends ParticipantSide> {
   sessionId: string;
   brief: OwnBrief<Side>;
@@ -56,11 +126,17 @@ export interface SuggestAppealInput<Side extends ParticipantSide> {
   nextCourtLevel: CourtLevel;
 }
 
-export interface ParticipantAgent<
+/** @deprecated P1-3/P1-4 で AgentTurnResult(SPEC §8.2) に統一する */
+export type LegacyAgentTurnResult =
+  | { type: "message"; message: string }
+  | { type: "hearing"; question: string };
+
+/** @deprecated P1-3/P1-4 で ParticipantAgent(SPEC §8.2) に統一する */
+export interface LegacyParticipantAgent<
   Side extends ParticipantSide = ParticipantSide
 > {
   readonly side: Side;
-  generateTurn(input: AgentTurnInput<Side>): Promise<AgentTurnResult>;
+  generateTurn(input: AgentTurnInput<Side>): Promise<LegacyAgentTurnResult>;
   resetSession(sessionId: string): void;
   absorbHearingAnswer(
     input: AbsorbHearingAnswerInput<Side>
@@ -70,7 +146,8 @@ export interface ParticipantAgent<
   suggestAppealPoints(input: SuggestAppealInput<Side>): Promise<string>;
 }
 
-export interface ParticipantAgents {
-  A: ParticipantAgent<"A">;
-  B: ParticipantAgent<"B">;
+/** @deprecated P1-3/P1-4 で ParticipantAgents(SPEC §8.2) に統一する */
+export interface LegacyParticipantAgents {
+  A: LegacyParticipantAgent<"A">;
+  B: LegacyParticipantAgent<"B">;
 }

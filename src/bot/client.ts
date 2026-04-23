@@ -11,7 +11,9 @@ import type { Config } from "../config.js";
 import type { LLMClient } from "../llm/provider.js";
 import { DebateOrchestrator } from "../application/services/DebateOrchestrator.js";
 import { SessionStateMachine } from "../application/services/SessionStateMachine.js";
+import { SessionRestorer } from "../application/services/SessionRestorer.js";
 import { InMemorySessionRepository } from "../infrastructure/persistence/InMemorySessionRepository.js";
+import type { SessionRepository } from "../application/ports/SessionRepository.js";
 import { AAgent } from "../infrastructure/agents/AAgent.js";
 import { BAgent } from "../infrastructure/agents/BAgent.js";
 import { createDiscordInputCoordinator } from "../presentation/discord/createDiscordInputCoordinator.js";
@@ -27,7 +29,7 @@ interface BufferedMessage {
 
 interface Deps {
   config: Config;
-  inputSessionRepository: InMemorySessionRepository;
+  inputSessionRepository: SessionRepository;
   inputCoordinator: ReturnType<typeof createDiscordInputCoordinator>["coordinator"];
   registerDmChannel: ReturnType<typeof createDiscordInputCoordinator>["registerDmChannel"];
   debateOrchestrator: DebateOrchestrator;
@@ -49,10 +51,19 @@ function createDiscordClient(): Client {
   });
 }
 
-export async function startBots(config: Config, llm: LLMClient) {
+// SPEC §6.9 / P1-19: sessionRepository は呼び出し側（index.ts）から差し込める。
+// 本番は EncryptedSessionRepository を渡してセッションを暗号化永続化する。
+// 未指定時は InMemorySessionRepository を使い、プロセス寿命だけのセッションに退行する
+// （テスト・開発用フォールバック）。
+export async function startBots(
+  config: Config,
+  llm: LLMClient,
+  sessionRepository?: SessionRepository
+) {
   const clientA = createDiscordClient();
   const clientB = createDiscordClient();
-  const inputSessionRepository = new InMemorySessionRepository();
+  const inputSessionRepository: SessionRepository =
+    sessionRepository ?? new InMemorySessionRepository();
 
   const resolveTalkChannel = (client: Client) => async () => {
     try {
@@ -94,13 +105,15 @@ export async function startBots(config: Config, llm: LLMClient) {
     getSystemTalkChannel: getTalkChannelA,
   });
 
+  // AAgent / BAgent は SPEC §8.2 準拠の新 ParticipantAgent<Side> に加えて
+  // DebateOrchestrator が要求する suggestAppealPoints / resetSession / getLastBrief
+  // を公開メソッドとして持つ（= DebateAgent<Side> を満たす）。そのまま渡せる。
+  const aAgent = new AAgent(llm, llmGateway);
+  const bAgent = new BAgent(llm, llmGateway);
   const debateOrchestrator = new DebateOrchestrator(
     inputSessionRepository,
     new SessionStateMachine(),
-    {
-      A: new AAgent(llm, llmGateway),
-      B: new BAgent(llm, llmGateway),
-    },
+    { A: aAgent, B: bAgent },
     llmGateway,
     messageGateway,
     pendingResponseRegistry
@@ -128,6 +141,26 @@ export async function startBots(config: Config, llm: LLMClient) {
     clientA.login(config.botA.token),
     clientB.login(config.botB.token),
   ]);
+
+  // P1-19: 永続化されている active セッションを復元する。
+  // mid-debate（debating/judging/hearing/appeal_pending）は安全に再開不可能なため
+  // archive + #talk 告知で利用者に「やり直してね」を伝える。
+  // preparing/ready はそのまま保持し、次の DM で通常フローに戻る。
+  const restorer = new SessionRestorer(inputSessionRepository, messageGateway);
+  try {
+    const result = await restorer.restore(config.talkGuildId);
+    if (result.type === "kept") {
+      console.log(
+        `既存セッションを復元: ${result.sessionId} (phase=${result.phase})`
+      );
+    } else if (result.type === "archived") {
+      console.log(
+        `中断セッションを archive: ${result.sessionId} (phase was ${result.interruptedPhase})`
+      );
+    }
+  } catch (error) {
+    console.error("セッション復元エラー:", error);
+  }
 
   return { clientA, clientB };
 }
@@ -228,16 +261,9 @@ async function handleDM(
   const guildId = deps.config.talkGuildId;
   deps.registerDmChannel(side, channel);
 
-  const session = await deps.inputSessionRepository.findActiveByGuildId(guildId);
-  if (session?.phase === "debating") {
-    await channel.send("今Bot同士が戦ってる。#talk 見てて。");
-    return;
-  }
-  if (session?.phase === "judging") {
-    await channel.send("判定中。ちょっと待って。");
-    return;
-  }
-
+  // P1-25: debating/judging フェーズでの「今戦ってる／判定中」案内は
+  // DiscordInputCoordinator 側に移譲。リセットを全フェーズで効かせるには
+  // ここで早期 return してはいけない（リセット文字列も弾かれてしまうため）。
   await deps.inputCoordinator.handleDirectMessage({
     guildId,
     side,

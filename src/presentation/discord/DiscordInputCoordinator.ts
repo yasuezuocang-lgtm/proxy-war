@@ -1,12 +1,14 @@
 import type { DMChannel } from "discord.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { HandleParticipantMessageUseCase } from "../../application/usecases/HandleParticipantMessageUseCase.js";
+import type { ResetSessionUseCase } from "../../application/usecases/ResetSessionUseCase.js";
 import type { SessionRepository } from "../../application/ports/SessionRepository.js";
 import { PendingParticipantResponseRegistry } from "./PendingParticipantResponseRegistry.js";
 
 export interface DiscordInputCoordinatorDeps {
   sessionRepository: SessionRepository;
   handleParticipantMessageUseCase: HandleParticipantMessageUseCase;
+  resetSessionUseCase: ResetSessionUseCase;
   pendingResponseRegistry?: PendingParticipantResponseRegistry;
   announceTopic?: (params: {
     guildId: string;
@@ -34,6 +36,15 @@ export class DiscordInputCoordinator {
 
     this.dmChannels.set(params.side, params.channel);
 
+    // P1-25 / SPEC §7.4: リセットは全フェーズ最優先で処理する。
+    // hearing の未解決回答・appeal_pending の異議受付・debating/judging の
+    // 「観戦中」案内より先にここで捕まえないと、リセット文字列が
+    // 誤って別用途に消費されてしまう。
+    if (this.isResetCommand(text)) {
+      await this.deps.resetSessionUseCase.execute({ guildId: params.guildId });
+      return;
+    }
+
     const activeSession = await this.deps.sessionRepository.findActiveByGuildId(
       params.guildId
     );
@@ -47,11 +58,10 @@ export class DiscordInputCoordinator {
     }
 
     // 上告フェーズ: 上告権のある側のDMは異議内容として受け取り、レジストリへ通知する。
-    // 引き分け時は両側から受け付ける。リセット操作は通らせたいので除外する。
+    // 引き分け時は両側から受け付ける。リセット操作は上のガードで既に処理済み。
     if (
       activeSession?.phase === "appeal_pending" &&
       activeSession.appealableSides.includes(params.side) &&
-      !this.isResetCommand(text) &&
       this.deps.pendingResponseRegistry?.resolve(params.side, text)
     ) {
       return;
@@ -64,8 +74,14 @@ export class DiscordInputCoordinator {
       return;
     }
 
-    if (this.isResetCommand(text)) {
-      await this.resetSession(params.guildId, params.channel);
+    // 代理対話中・判定中に DM が来た場合の案内。
+    // リセットは既に上で処理済みなので、ここには到達しない。
+    if (activeSession?.phase === "debating") {
+      await params.channel.send("今Bot同士が戦ってる。#talk 見てて。");
+      return;
+    }
+    if (activeSession?.phase === "judging") {
+      await params.channel.send("判定中。ちょっと待って。");
       return;
     }
 
@@ -87,21 +103,12 @@ export class DiscordInputCoordinator {
   }
 
   private isResetCommand(text: string): boolean {
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase().trim();
     return (
       lower.includes("リセット") ||
       lower.includes("新しく始める") ||
       lower === "reset"
     );
-  }
-
-  private async resetSession(guildId: string, channel: DMChannel): Promise<void> {
-    const session = await this.deps.sessionRepository.findActiveByGuildId(guildId);
-    if (session) {
-      await this.deps.sessionRepository.delete(session.id);
-    }
-
-    await channel.send("リセットした。また本音送って。");
   }
 
   private async maybeAnnounceTopic(

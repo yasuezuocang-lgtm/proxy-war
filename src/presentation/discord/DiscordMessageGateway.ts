@@ -43,4 +43,14 @@ export class DiscordMessageGateway implements MessageGateway {
 
     await channel.sendTyping();
   }
+
+  async sendTalkTyping(speaker: TalkSpeaker = "system"): Promise<void> {
+    const provider = this.talkChannelProviders[speaker];
+    const channel = await provider();
+    if (!channel) {
+      return;
+    }
+
+    await channel.sendTyping();
+  }
 }

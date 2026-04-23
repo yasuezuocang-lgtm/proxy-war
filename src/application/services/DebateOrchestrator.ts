@@ -1,11 +1,13 @@
+import { loadAppConfig } from "../../config.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
-import type { RefereeLlmGateway } from "../ports/LlmGateway.js";
+import type { LlmGateway } from "../ports/LlmGateway.js";
 import type { MessageGateway } from "../ports/MessageGateway.js";
 import type { ParticipantResponseGateway } from "../ports/ParticipantResponseGateway.js";
 import type {
   AgentTurnResult,
-  ParticipantAgent,
-  ParticipantAgents,
+  DebateAgent,
+  DebateAgents,
+  HearingAnswerReview,
   PublicTurn,
 } from "../ports/ParticipantAgent.js";
 import { asOwnBrief } from "../ports/ParticipantAgent.js";
@@ -22,15 +24,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// DebateOrchestrator は「司会（DebateCoordinator）」として振る舞う。
+// 責務はターン順管理・ラウンド進行・判定起動・上告サイクル調整。
+// 発言の中身を作るのは各 ParticipantAgent 側に委譲し、
+// ここは「誰に喋らせるか」と「結果をどう配信するか」だけを扱う（SPEC §8.2 / P1-6）。
 export class DebateOrchestrator {
   constructor(
     private readonly sessionRepository: SessionRepository,
     private readonly stateMachine: SessionStateMachine,
-    private readonly participantAgents: ParticipantAgents,
-    private readonly refereeGateway: RefereeLlmGateway,
+    private readonly participantAgents: DebateAgents,
+    // 司会は判定（RefereeLlmGateway）と最終審の敗者 Consolation DM（ParticipantLlmGateway）の
+    // 両方を使うため、合成型 LlmGateway を受け取る。
+    // 代理対話の LLM 呼び出しは participantAgents 側へ完全に委譲済みで、
+    // ここから A/B の brief 抽出や追加質問生成は呼ばない（SPEC §8.2）。
+    private readonly llmGateway: LlmGateway,
     private readonly messageGateway: MessageGateway,
     private readonly participantResponseGateway: ParticipantResponseGateway,
-    private readonly turnDelayMs = 3000
+    private readonly turnDelayMs = loadAppConfig().debate.turnDelayMs,
+    // SPEC §9 / P1-11（H2）: 1ヒアリングあたりの追撃上限。
+    // SessionPolicy を変えずにここで持つ（既存 policy は最小構成のため）。
+    private readonly maxHearingFollowups = loadAppConfig().hearing
+      .maxHearingFollowups
   ) {}
 
   async run(sessionId: string): Promise<void> {
@@ -96,7 +110,8 @@ export class DebateOrchestrator {
           sessionId,
           currentSide,
           hearingCount,
-          result.question
+          result.question,
+          result.reason
         );
         continue;
       }
@@ -116,6 +131,10 @@ export class DebateOrchestrator {
   // 型レベルで片側の brief だけを渡せる入口。side の値によって
   // 選ばれる agent の型パラメータ S が揃うため、誤って反対側の brief
   // を混ぜるコードはコンパイルが通らない。
+  //
+  // turnIndex===0 は開幕ターン → generateOpeningTurn。
+  // 以降は generateReplyTurn。ヒアリングで 1 ターン消費しなかった場合も
+  // 完了済みターン番号に応じて opening/reply を切り替える。
   private callAgentForSide(
     side: ParticipantSide,
     params: {
@@ -134,7 +153,7 @@ export class DebateOrchestrator {
 
   private callAgent<Side extends ParticipantSide>(
     side: Side,
-    agent: ParticipantAgent<Side>,
+    agent: DebateAgent<Side>,
     params: {
       sessionId: string;
       briefText: string;
@@ -143,13 +162,17 @@ export class DebateOrchestrator {
       turnIndex: number;
     }
   ): Promise<AgentTurnResult> {
-    return agent.generateTurn({
+    const turnInput = {
       sessionId: params.sessionId,
       brief: asOwnBrief(side, params.briefText),
       goal: params.goal,
       conversation: params.conversation,
       turnIndex: params.turnIndex,
-    });
+    };
+    if (params.turnIndex === 0) {
+      return agent.generateOpeningTurn(turnInput);
+    }
+    return agent.generateReplyTurn(turnInput);
   }
 
   private sendDebateOpening(session: Session): Promise<void> {
@@ -164,7 +187,8 @@ export class DebateOrchestrator {
     sessionId: string,
     side: ParticipantSide,
     hearingCount: { A: number; B: number },
-    question: string
+    question: string,
+    reason: string
   ): Promise<{ A: number; B: number }> {
     const session = await this.requireSession(sessionId);
     const request: HearingRequest = {
@@ -183,30 +207,109 @@ export class DebateOrchestrator {
     await this.messageGateway.sendTalkMessage(
       `⏸️ ヒアリングタイム — ${side}側の依頼人に確認中...`
     );
-    await this.messageGateway.sendDm(
-      side,
-      `⏸️ 対話中に確認したいことが出た。\n\n${question}\n\n返信して。終わったら対話再開する。`
-    );
 
-    const answer = await this.participantResponseGateway.waitForResponse(
-      side,
-      session.policy.hearingTimeoutMs
-    );
+    // 初回の質問 → 回答 → 追撃ループ。
+    // 追撃（H2）は「回答が浅い時のみ」最大 maxHearingFollowups 回まで繰り返す。
+    // タイムアウト時は追撃せず対話再開（ユーザーが離席している可能性が高い）。
+    let currentQuestion = question;
+    let currentReason = reason;
+    let lastAnswer: string | null = null;
+    let followupsUsed = 0;
 
-    if (answer) {
+    while (true) {
+      await this.sendHearingDm(side, currentQuestion, currentReason);
+
+      const answer = await this.participantResponseGateway.waitForResponse(
+        side,
+        session.policy.hearingTimeoutMs
+      );
+
+      if (!answer) {
+        lastAnswer = null;
+        break;
+      }
+
       await this.updateParticipantBrief(sessionId, side, answer);
+      lastAnswer = answer;
+
+      if (followupsUsed >= this.maxHearingFollowups) {
+        break;
+      }
+
+      const review = await this.reviewHearingAnswerForSide(
+        sessionId,
+        side,
+        currentQuestion,
+        answer
+      );
+      if (review.type === "sufficient") {
+        break;
+      }
+
+      followupsUsed += 1;
+      currentQuestion = review.question;
+      currentReason = review.reason;
+      await this.messageGateway.sendTalkMessage(
+        `🔁 ${side}側に追撃質問（${followupsUsed}/${this.maxHearingFollowups}）...`
+      );
+    }
+
+    if (lastAnswer) {
       await this.messageGateway.sendTalkMessage("▶️ ヒアリング完了 — 対話再開");
     } else {
       await this.messageGateway.sendTalkMessage("▶️ タイムアウト — 対話再開");
     }
 
     const latestSession = await this.requireSession(sessionId);
-    this.stateMachine.resolveHearing(latestSession, answer ?? undefined);
+    this.stateMachine.resolveHearing(latestSession, lastAnswer ?? undefined);
     await this.sessionRepository.save(latestSession);
 
     const updatedCount = { ...hearingCount };
     updatedCount[side] += 1;
     return updatedCount;
+  }
+
+  private sendHearingDm(
+    side: ParticipantSide,
+    question: string,
+    reason: string
+  ): Promise<void> {
+    // SPEC H5: 依頼人には「なぜ聞くか」を質問本文と一緒に見せる。
+    // reason が空文字列の場合は理由ブロックを省略（抽象フォールバックで
+    // 質問だけが埋まるケースを想定）。
+    const reasonBlock = reason.trim()
+      ? `\n\n【確認したい理由】\n${reason.trim()}`
+      : "";
+    return this.messageGateway.sendDm(
+      side,
+      `⏸️ 対話中に確認したいことが出た。\n\n${question}${reasonBlock}\n\n返信して。終わったら対話再開する。`
+    );
+  }
+
+  private async reviewHearingAnswerForSide(
+    sessionId: string,
+    side: ParticipantSide,
+    question: string,
+    answer: string
+  ): Promise<HearingAnswerReview> {
+    const session = await this.requireSession(sessionId);
+    const participant = session.getParticipant(side);
+    const currentStructuredContext = participant.brief.structuredContext || "";
+
+    if (side === "A") {
+      return this.participantAgents.A.reviewHearingAnswer({
+        sessionId,
+        currentStructuredContext: asOwnBrief("A", currentStructuredContext),
+        question,
+        answer,
+      });
+    }
+    return this.participantAgents.B.reviewHearingAnswer({
+      sessionId,
+      currentStructuredContext: asOwnBrief("B", currentStructuredContext),
+      question,
+      answer,
+    });
   }
 
   private async updateParticipantBrief(
@@ -221,22 +324,36 @@ export class DebateOrchestrator {
       return;
     }
 
-    const brief = await this.absorbHearingAnswerForSide(side, {
+    // SPEC §8.2 で absorbHearingAnswer は Promise<void>。
+    // agent は内部で武器リストへの追記 + brief 統合 + stash を行う。
+    // 司会（このクラス）は後から getLastBrief() で統合 brief を取り出して
+    // session.participant.brief を更新する（司法に渡すのは session 由来のため）。
+    await this.absorbHearingAnswerForSide(side, {
       sessionId,
       structuredContext: currentStructuredContext,
       answer,
     });
 
+    const stashed = this.getLastBriefForSide(sessionId, side);
+    if (!stashed) {
+      // agent が stash に失敗した場合（通常フローでは起きない）。
+      // session.brief を書き換えられないが、agent 側の記憶は更新済みなので
+      // 続行して次ターンへ進める。
+      participant.brief.rawInputs.push(answer);
+      await this.sessionRepository.save(session);
+      return;
+    }
+
     participant.brief.rawInputs.push(answer);
-    participant.brief.structuredContext = brief.structuredContext;
-    participant.brief.summary = brief.summary;
+    participant.brief.structuredContext = stashed.structuredContext;
+    participant.brief.summary = stashed.summary;
     await this.sessionRepository.save(session);
   }
 
   private absorbHearingAnswerForSide(
     side: ParticipantSide,
     params: { sessionId: string; structuredContext: string; answer: string }
-  ) {
+  ): Promise<void> {
     if (side === "A") {
       return this.participantAgents.A.absorbHearingAnswer({
         sessionId: params.sessionId,
@@ -249,6 +366,13 @@ export class DebateOrchestrator {
       currentStructuredContext: asOwnBrief("B", params.structuredContext),
       answer: params.answer,
     });
+  }
+
+  private getLastBriefForSide(sessionId: string, side: ParticipantSide) {
+    if (side === "A") {
+      return this.participantAgents.A.getLastBrief(sessionId);
+    }
+    return this.participantAgents.B.getLastBrief(sessionId);
   }
 
   private async appendTurn(
@@ -286,7 +410,7 @@ export class DebateOrchestrator {
     );
 
     const districtRound = session.rounds[0];
-    const judgment = await this.refereeGateway.judgeRound({
+    const judgment = await this.llmGateway.judgeRound({
       courtLevel: currentRound.courtLevel,
       contextA: session.getParticipant("A").brief.structuredContext || "",
       contextB: session.getParticipant("B").brief.structuredContext || "",
@@ -397,10 +521,14 @@ export class DebateOrchestrator {
     const latestSession = await this.requireSession(sessionId);
 
     if (!appealed || !appealed.response.trim()) {
-      this.stateMachine.expireAppeal(latestSession);
+      // SPEC §6.8 / P1-15: AppealExpired イベント発火。
+      // タイマー（session.policy.appealTimeoutMs = APPEAL_WINDOW_MS）経過で
+      // appeal_pending → finished に遷移し、イベントを観測側へ返す。
+      // 返り値は現状ログのみだが、将来の永続化・通知リスナーが購読できる起点にする。
+      const appealExpiredEvent = this.stateMachine.expireAppeal(latestSession);
       await this.sessionRepository.save(latestSession);
       await this.messageGateway.sendTalkMessage(
-        "⏳ 異議なし。判定が確定した。"
+        `⏳ 異議なし。判定が確定した。（${COURT_LABELS[appealExpiredEvent.closedAtCourtLevel]}で終了）`
       );
       return false;
     }
@@ -516,12 +644,59 @@ export class DebateOrchestrator {
   }
 
   private async finalizeSession(sessionId: string): Promise<void> {
+    await this.sendConsolationDmToLoser(sessionId);
+
     await this.messageGateway.sendTalkMessage(
       "━━━\n終了。もう1回やるならBotに「リセット」ってDMして。\n━━━"
     );
 
     this.participantAgents.A.resetSession(sessionId);
     this.participantAgents.B.resetSession(sessionId);
+  }
+
+  // SPEC §6.9 / P1-17: 最終審（または上告放棄）で敗者が確定した場合、
+  // その敗者だけに振り返りメッセージを DM で送る。
+  //   - 引き分け: 誰が「敗者」か決まっていないので送らない
+  //   - 判決未実施: 異常系なので送らない
+  //   - LLM が空文字列を返した: DM 本体が空になるので送らない
+  //   - LLM エラー: 握りつぶす（セッション終了フロー自体は止めない）
+  // 判決履歴は第一審〜最終審までの summary を順に渡して「どう転んだか」を
+  // 代理人側で参照できるようにする。
+  private async sendConsolationDmToLoser(sessionId: string): Promise<void> {
+    const session = await this.requireSession(sessionId);
+    const latestJudgment = session.rounds.at(-1)?.judgment;
+    if (!latestJudgment || latestJudgment.winner === "draw") {
+      return;
+    }
+
+    const loserSide: ParticipantSide =
+      latestJudgment.winner === "A" ? "B" : "A";
+    const loserContext =
+      session.getParticipant(loserSide).brief.structuredContext || "";
+    const judgmentHistory = session.rounds
+      .map((round) => round.judgment)
+      .filter((judgment): judgment is Judgment => judgment !== null)
+      .map((judgment) => judgment.summary || "");
+
+    let consolation: string;
+    try {
+      consolation = await this.llmGateway.generateConsolation({
+        loserContext,
+        judgmentHistory,
+      });
+    } catch {
+      return;
+    }
+
+    const trimmed = consolation.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    await this.messageGateway.sendDm(
+      loserSide,
+      `💬 お疲れ。最後にひとこと。\n\n${trimmed}`
+    );
   }
 
   private async publishJudgment(

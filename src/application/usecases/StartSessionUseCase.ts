@@ -1,5 +1,6 @@
 import { Session } from "../../domain/entities/Session.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
+import type { AppConfig } from "../../config.js";
 import { SessionPolicy } from "../../domain/policies/SessionPolicy.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
@@ -17,7 +18,8 @@ export interface StartSessionOutput {
 export class StartSessionUseCase {
   constructor(
     private readonly sessionRepository: SessionRepository,
-    private readonly stateMachine: SessionStateMachine
+    private readonly stateMachine: SessionStateMachine,
+    private readonly config: AppConfig
   ) {}
 
   async execute(input: StartSessionInput): Promise<StartSessionOutput> {
@@ -33,11 +35,12 @@ export class StartSessionUseCase {
     const session = new Session({
       id: `${input.guildId}-${Date.now()}`,
       guildId: input.guildId,
-      // TODO: テスト用の一時設定。本番戻しは maxTurns を既定 (10) に、
-      // maxAppeals を用途に応じて調整すること。
       policy: new SessionPolicy({
-        maxTurns: 4, // 往復2 (A→B→A→B)
-        maxAppeals: 2, // district → high → supreme の上告チェーンを検証可能に
+        maxTurns: this.config.debate.maxTurnsPerRound,
+        maxAppeals: this.config.appeal.maxAppeals,
+        maxHearingsPerSide: this.config.hearing.maxHearingsPerSide,
+        hearingTimeoutMs: this.config.hearing.hearingTimeoutMs,
+        appealTimeoutMs: this.config.appeal.appealWindowMs,
       }),
     });
 

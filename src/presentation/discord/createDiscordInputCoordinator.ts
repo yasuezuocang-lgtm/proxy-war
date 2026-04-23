@@ -3,6 +3,8 @@ import type { LLMClient } from "../../llm/provider.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { SessionRepository } from "../../application/ports/SessionRepository.js";
 import { createInputWorkflow } from "../../application/factories/createInputWorkflow.js";
+import { ResetSessionUseCase } from "../../application/usecases/ResetSessionUseCase.js";
+import { SessionStateMachine } from "../../application/services/SessionStateMachine.js";
 import { PromptDrivenLlmGateway } from "../../infrastructure/llm/PromptDrivenLlmGateway.js";
 import { TOPIC_EXTRACT_PROMPT } from "../../llm/prompts.js";
 import { DiscordInputCoordinator } from "./DiscordInputCoordinator.js";
@@ -33,10 +35,16 @@ export function createDiscordInputCoordinator(
     system: params.getSystemTalkChannel,
   });
   const pendingResponseRegistry = new PendingParticipantResponseRegistry();
+  const resetSessionUseCase = new ResetSessionUseCase(
+    params.sessionRepository,
+    new SessionStateMachine(),
+    messageGateway
+  );
 
   const coordinator = new DiscordInputCoordinator({
     sessionRepository: params.sessionRepository,
     handleParticipantMessageUseCase: workflow.handleParticipantMessage,
+    resetSessionUseCase,
     pendingResponseRegistry,
     extractTopic: async (rawText: string) => {
       const response = await params.llmClient.chat([

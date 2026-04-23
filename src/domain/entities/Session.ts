@@ -12,6 +12,7 @@ export interface SessionParams {
   guildId: string;
   policy?: SessionPolicy;
   createdAt?: number;
+  lastActivityAt?: number;
 }
 
 export class Session {
@@ -26,6 +27,11 @@ export class Session {
   // 上告可能な側。勝敗がついた時は敗者のみ、引き分けの時は両側、上告終了時は空。
   appealableSides: ParticipantSide[];
   topic: string | null;
+  // SPEC §6.9 / P1-26: 最後にセッションで何らかの活動があった時刻（ms）。
+  // SessionStateMachine の全遷移で更新される。SessionTimeoutChecker が
+  // now() - lastActivityAt > SESSION_IDLE_TIMEOUT_MS を満たすセッションを
+  // 自動アーカイブ対象にする。初期値は createdAt。
+  lastActivityAt: number;
 
   constructor(params: SessionParams) {
     this.id = params.id;
@@ -41,6 +47,7 @@ export class Session {
     this.activeHearing = null;
     this.appealableSides = [];
     this.topic = null;
+    this.lastActivityAt = params.lastActivityAt ?? this.createdAt;
   }
 
   getParticipant(side: ParticipantSide): Participant {

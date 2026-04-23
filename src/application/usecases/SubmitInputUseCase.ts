@@ -1,12 +1,10 @@
 import type { Session } from "../../domain/entities/Session.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
+import type { AppConfig } from "../../config.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import { BriefComposer } from "../services/BriefComposer.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 import { StartSessionUseCase } from "./StartSessionUseCase.js";
-
-const MINIMUM_INPUT_LENGTH = 10;
-const MAX_PROBE_COUNT = 3;
 
 export interface SubmitInputInput {
   guildId: string;
@@ -26,7 +24,8 @@ export class SubmitInputUseCase {
     private readonly sessionRepository: SessionRepository,
     private readonly startSessionUseCase: StartSessionUseCase,
     private readonly stateMachine: SessionStateMachine,
-    private readonly briefComposer: BriefComposer
+    private readonly briefComposer: BriefComposer,
+    private readonly config: AppConfig
   ) {}
 
   async execute(input: SubmitInputInput): Promise<SubmitInputOutput> {
@@ -40,7 +39,7 @@ export class SubmitInputUseCase {
     participant.brief.rawInputs.push(trimmedMessage);
 
     const totalLength = participant.brief.rawInputs.join("").length;
-    if (totalLength < MINIMUM_INPUT_LENGTH) {
+    if (totalLength < this.config.input.minInputLength) {
       await this.sessionRepository.save(session);
       return {
         session,
@@ -56,7 +55,7 @@ export class SubmitInputUseCase {
 
     if (
       this.briefComposer.hasSignificantGaps(brief.structuredContext) &&
-      participant.followUpCount < MAX_PROBE_COUNT
+      participant.followUpCount < this.config.input.maxProbeQuestions
     ) {
       participant.followUpCount++;
       const probe = await this.briefComposer.generateProbe(

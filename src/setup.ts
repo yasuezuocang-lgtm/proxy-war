@@ -1,6 +1,6 @@
 import * as readline from "readline/promises";
 import { randomBytes } from "crypto";
-import { writeFileSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { LLM_PROVIDERS, type LLMProvider } from "./config.js";
@@ -8,10 +8,32 @@ import { LLM_PROVIDERS, type LLMProvider } from "./config.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(__dirname, "../.env");
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+// SPEC §6「暗号化セッション保存」準拠:
+// ENCRYPTION_KEY は一度生成したら再生成してはならない（再生成すると過去セッションが復号不能になる）。
+// 既存 .env に有効な ENCRYPTION_KEY があれば保持し、無い場合のみ 32 bytes を新規生成する。
+export function resolveEncryptionKey(envPath: string): {
+  key: string;
+  generated: boolean;
+} {
+  if (existsSync(envPath)) {
+    try {
+      const content = readFileSync(envPath, "utf-8");
+      const match = content.match(/^ENCRYPTION_KEY=(.*)$/m);
+      if (match) {
+        const value = match[1].trim();
+        if (value) {
+          return { key: value, generated: false };
+        }
+      }
+    } catch {
+      // 読み込み失敗時は新規生成に委ねる
+    }
+  }
+  return { key: randomBytes(32).toString("hex"), generated: true };
+}
+
+// readline は main() 内で生成する（import 時に stdin を掴まないため）。
+let rl: readline.Interface | null = null;
 
 function header() {
   console.log();
@@ -28,6 +50,7 @@ function header() {
 }
 
 async function ask(question: string, fallback?: string): Promise<string> {
+  if (!rl) throw new Error("readline is not initialized");
   const suffix = fallback ? ` (${fallback})` : "";
   const answer = (await rl.question(`  ${question}${suffix}: `)).trim();
   return answer || fallback || "";
@@ -192,6 +215,11 @@ ENCRYPTION_KEY=${config.encryptionKey}
 }
 
 async function main() {
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
   header();
 
   if (existsSync(ENV_PATH)) {
@@ -209,13 +237,20 @@ async function main() {
   const bots = await setupBots();
   const talkGuildId = await setupTalkServer();
   const llm = await setupLLM();
-  const encryptionKey = randomBytes(32).toString("hex");
+  const { key: encryptionKey, generated } = resolveEncryptionKey(ENV_PATH);
 
   writeEnvFile({ ...bots, talkGuildId, llm, encryptionKey });
 
   console.log("── セットアップ完了 ──");
   console.log();
   console.log("  .env ファイルを作成しました。");
+  console.log();
+  if (generated) {
+    console.log("  ENCRYPTION_KEY を新規生成しました (32 bytes)。");
+  } else {
+    console.log("  既存の ENCRYPTION_KEY を保持しました。");
+  }
+  console.log("  ⚠ 鍵を再生成すると過去セッションが復号できなくなります。");
   console.log();
   console.log("  次のステップ:");
   console.log("    1. Bot A と Bot B を共有サーバーに招待");
@@ -231,8 +266,17 @@ async function main() {
   rl.close();
 }
 
-main().catch((err) => {
-  console.error("セットアップエラー:", err);
-  rl.close();
-  process.exit(1);
-});
+// スクリプトとして直接実行された時のみ main() を走らせる。
+// テストから import される場合は readline による対話を起動しない。
+const isMainModule =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith("setup.ts") === true ||
+  process.argv[1]?.endsWith("setup.js") === true;
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error("セットアップエラー:", err);
+    rl?.close();
+    process.exit(1);
+  });
+}
