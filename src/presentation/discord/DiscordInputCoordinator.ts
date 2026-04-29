@@ -1,6 +1,9 @@
 import type { DMChannel } from "discord.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
-import type { HandleParticipantMessageUseCase } from "../../application/usecases/HandleParticipantMessageUseCase.js";
+import type {
+  HandleParticipantMessageUseCase,
+  ParticipantMessageResult,
+} from "../../application/usecases/HandleParticipantMessageUseCase.js";
 import type { ResetSessionUseCase } from "../../application/usecases/ResetSessionUseCase.js";
 import type { SessionRepository } from "../../application/ports/SessionRepository.js";
 import { PendingParticipantResponseRegistry } from "./PendingParticipantResponseRegistry.js";
@@ -85,11 +88,23 @@ export class DiscordInputCoordinator {
       return;
     }
 
-    const result = await this.deps.handleParticipantMessageUseCase.execute({
-      guildId: params.guildId,
-      side: params.side,
-      message: text,
-    });
+    // LLM 処理中は Discord ネイティブの「入力中...」アニメーションを表示する。
+    // Discord の typing は ~10 秒で消えるため、処理が終わるまで 8 秒ごとに再送する。
+    await params.channel.sendTyping();
+    const typingRefresh = setInterval(() => {
+      params.channel.sendTyping().catch(() => {});
+    }, 8000);
+
+    let result: ParticipantMessageResult;
+    try {
+      result = await this.deps.handleParticipantMessageUseCase.execute({
+        guildId: params.guildId,
+        side: params.side,
+        message: text,
+      });
+    } finally {
+      clearInterval(typingRefresh);
+    }
 
     await params.channel.send(result.reply);
 

@@ -94,6 +94,13 @@ export class DebateOrchestrator {
           message: turn.message,
         }));
 
+      // #talk に「誰のAIが考え中か」をテキストで通知し、
+      // Discord ネイティブの入力中アニメーションも並行して送る。
+      await this.messageGateway.sendTalkMessage(
+        `💬 **${currentSide}代理AI** — 考え中...`
+      );
+      await this.messageGateway.sendTalkTyping?.(currentSide);
+
       const result = await this.callAgentForSide(currentSide, {
         sessionId,
         briefText: participant.brief.structuredContext || "",
