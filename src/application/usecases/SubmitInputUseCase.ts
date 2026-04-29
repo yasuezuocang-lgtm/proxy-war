@@ -49,7 +49,7 @@ export class SubmitInputUseCase {
       };
     }
 
-    const brief = await this.composeBrief(session, input.side, trimmedMessage);
+    const brief = await this.composeBrief(session, input.side);
     participant.brief.structuredContext = brief.structuredContext;
     participant.brief.summary = brief.summary;
 
@@ -84,17 +84,9 @@ export class SubmitInputUseCase {
 
   private async composeBrief(
     session: Session,
-    side: ParticipantSide,
-    additionalInput: string
+    side: ParticipantSide
   ) {
     const participant = session.getParticipant(side);
-    if (!participant.brief.structuredContext) {
-      return this.briefComposer.composeFromRawInputs(participant.brief.rawInputs);
-    }
-
-    return this.briefComposer.appendToBrief({
-      currentStructuredContext: participant.brief.structuredContext,
-      additionalInput,
-    });
+    return this.briefComposer.composeFromRawInputs(participant.brief.rawInputs);
   }
 }

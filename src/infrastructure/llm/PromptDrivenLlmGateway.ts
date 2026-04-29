@@ -31,6 +31,9 @@ const SUMMARY_BANNED_CONTENT_PATTERNS = [
 ];
 const STRUCTURED_SECTION_PATTERN =
   /■([^:\n]+):\s*([\s\S]*?)(?=\n■[^:\n]+:|$)/g;
+const LATEST_REVISION_SECTION = "最新の訂正・追加発言";
+const LATEST_REVISION_SECTION_PATTERN =
+  /\n?■最新の訂正・追加発言:\s*[\s\S]*?(?=\n■[^:\n]+:|$)/g;
 
 export class PromptDrivenLlmGateway implements LlmGateway {
   constructor(
@@ -56,21 +59,29 @@ export class PromptDrivenLlmGateway implements LlmGateway {
   }
 
   async appendBrief(input: AppendBriefInput): Promise<StructuredBrief> {
-    const structuredContext = await this.chat([
-      { role: "system", content: this.prompts.append() },
-      {
-        role: "user",
-        content:
-          `【現在の分析】\n${input.currentStructuredContext}\n\n` +
-          `【依頼人の追加発言】\n${input.additionalInput}`,
-      },
-    ]);
+    const structuredContext = this.withLatestRevisionSection(
+      await this.chat([
+        { role: "system", content: this.prompts.append() },
+        {
+          role: "user",
+          content:
+            `【現在の分析】\n${input.currentStructuredContext}\n\n` +
+            `【依頼人の訂正・追加発言（現在の分析より優先）】\n${input.additionalInput}`,
+        },
+      ]),
+      input.additionalInput
+    );
 
-    const summary = this.sanitizeSummary(
+    const initialSummary = this.sanitizeSummary(
       await this.chat([
         { role: "system", content: this.prompts.brief() },
         { role: "user", content: structuredContext },
       ]),
+      structuredContext,
+      { ensureLatestRevision: false }
+    );
+    const summary = await this.rethinkSummaryIfLatestRevisionMissing(
+      initialSummary,
       structuredContext
     );
 
@@ -181,7 +192,11 @@ export class PromptDrivenLlmGateway implements LlmGateway {
     return "一番引っかかってるポイントだけ具体的に教えて。";
   }
 
-  private sanitizeSummary(content: string, structuredContext: string): string {
+  private sanitizeSummary(
+    content: string,
+    structuredContext: string,
+    options: { ensureLatestRevision?: boolean } = {}
+  ): string {
     if (this.isBannedSummaryContent(content)) {
       return this.buildFallbackSummary(structuredContext);
     }
@@ -196,7 +211,12 @@ export class PromptDrivenLlmGateway implements LlmGateway {
       return this.buildFallbackSummary(structuredContext);
     }
 
-    return cleanedLines.join("\n\n");
+    const summary = cleanedLines.join("\n\n");
+    if (options.ensureLatestRevision === false) {
+      return summary;
+    }
+
+    return this.ensureLatestRevisionReflected(summary, structuredContext);
   }
 
   private isBannedSummaryContent(content: string): boolean {
@@ -233,13 +253,71 @@ export class PromptDrivenLlmGateway implements LlmGateway {
     return text.replace(MULTI_SPACE_PATTERN, " ").trim();
   }
 
+  private ensureLatestRevisionReflected(
+    summary: string,
+    structuredContext: string
+  ): string {
+    const latestRevision = this.parseStructuredSections(structuredContext)[
+      LATEST_REVISION_SECTION
+    ];
+    if (!latestRevision || this.isRevisionReflected(summary, latestRevision)) {
+      return summary;
+    }
+
+    return `最新の訂正では「${latestRevision}」が正しい。\n\n${summary}`;
+  }
+
+  private async rethinkSummaryIfLatestRevisionMissing(
+    summary: string,
+    structuredContext: string
+  ): Promise<string> {
+    const latestRevision = this.parseStructuredSections(structuredContext)[
+      LATEST_REVISION_SECTION
+    ];
+    if (!latestRevision || this.isRevisionReflected(summary, latestRevision)) {
+      return summary;
+    }
+
+    const revisedSummary = this.sanitizeSummary(
+      await this.chat([
+        { role: "system", content: this.prompts.revisionReflection() },
+        {
+          role: "user",
+          content:
+            `【構造化ブリーフ】\n${structuredContext}\n\n` +
+            `【直近修正】\n${latestRevision}\n\n` +
+            `【前回確認文】\n${summary}`,
+        },
+      ]),
+      structuredContext,
+      { ensureLatestRevision: false }
+    );
+
+    return this.ensureLatestRevisionReflected(revisedSummary, structuredContext);
+  }
+
+  private isRevisionReflected(summary: string, latestRevision: string): boolean {
+    return this.includesNormalized(summary, latestRevision);
+  }
+
+  private includesNormalized(text: string, search: string): boolean {
+    const normalize = (value: string) =>
+      value.replace(/[。\s「」『』、,.!?！？]/g, "");
+
+    return normalize(text).includes(normalize(search));
+  }
+
   private buildFallbackSummary(structuredContext: string): string {
     const sections = this.parseStructuredSections(structuredContext);
     const understanding = sections["案件の理解"] || "状況の整理がまだ足りてない。";
+    const latestRevision = sections[LATEST_REVISION_SECTION];
     const interest = sections["インタレスト"];
     const weapon = sections["武器"];
 
     const parts = [understanding];
+    if (latestRevision) {
+      parts.unshift(`最新の訂正では「${latestRevision}」が正しい。`);
+    }
     if (interest && interest !== "不明") {
       parts.push(`お前が大事にしてるのは${interest}ってことだよな。`);
     }
@@ -248,6 +326,17 @@ export class PromptDrivenLlmGateway implements LlmGateway {
     }
 
     return parts.join("\n\n");
+  }
+
+  private withLatestRevisionSection(
+    structuredContext: string,
+    latestInput: string
+  ): string {
+    const cleaned = structuredContext
+      .replace(LATEST_REVISION_SECTION_PATTERN, "")
+      .trim();
+
+    return `${cleaned}\n\n■${LATEST_REVISION_SECTION}:\n${latestInput.trim()}`;
   }
 
   private parseStructuredSections(structuredContext: string): Record<string, string> {

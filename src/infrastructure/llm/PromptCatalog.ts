@@ -2,6 +2,7 @@ import {
   APPEND_PROMPT,
   BATTLE_BRIEF_PROMPT,
   PROBE_PROMPT,
+  REVISION_REFLECTION_PROMPT,
   SLOT_EXTRACT_PROMPT,
   appealSuggestionPrompt,
   judgePrompt,
@@ -24,6 +25,10 @@ export class PromptCatalog {
 
   brief(): string {
     return BATTLE_BRIEF_PROMPT;
+  }
+
+  revisionReflection(): string {
+    return REVISION_REFLECTION_PROMPT;
   }
 
   proxyBot(side: "A" | "B", ownContext: string): string {

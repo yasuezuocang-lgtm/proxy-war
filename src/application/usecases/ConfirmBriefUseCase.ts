@@ -6,13 +6,13 @@ import { BriefComposer } from "../services/BriefComposer.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 
 const MAX_CONFIRMATION_REVISIONS = 5;
-const MINIMUM_CORRECTION_LENGTH = 8;
 const ASSISTANT_TRANSCRIPT_LINE =
   /^(AI|アプリ|assistant|Assistant|Bot|SYSTEM|System)\b/;
 const TRANSCRIPT_TIME_LINE = /^[—-]\s*\d{1,2}:\d{2}$/;
 const GENERATED_REPLY_LINE =
   /^(これで戦う。|相手は誰？|申し訳ありませんが、私は実際の依頼人ではなく)/;
 const CORRECTION_PREFIX = /^(修正|追加|訂正|違う|補足)[:：]\s*/i;
+const NORMALIZE_SUMMARY_PATTERN = /[。\s「」『』、,.!?！？]/g;
 
 export interface ConfirmBriefInput {
   sessionId: string;
@@ -55,8 +55,8 @@ export class ConfirmBriefUseCase {
       };
     }
 
-    const correction = this.extractCorrection(input.message);
-    if (!correction) {
+    const extractedCorrection = this.extractCorrection(input.message);
+    if (!extractedCorrection) {
       return {
         session,
         reply:
@@ -65,29 +65,29 @@ export class ConfirmBriefUseCase {
         movedToGoalSetting: false,
       };
     }
+    const correction = extractedCorrection;
 
     participant.brief.rawInputs.push(correction);
 
     if (participant.followUpCount < MAX_CONFIRMATION_REVISIONS) {
       participant.followUpCount++;
 
-      const currentStructuredContext = participant.brief.structuredContext;
-      if (!currentStructuredContext) {
+      if (!participant.brief.structuredContext) {
         throw new DomainError("確認対象のブリーフが存在しません。");
       }
 
-      const brief = await this.briefComposer.appendToBrief({
-        currentStructuredContext,
-        additionalInput: correction,
-      });
+      const brief = await this.briefComposer.composeFromRawInputs(
+        participant.brief.rawInputs
+      );
 
       participant.brief.structuredContext = brief.structuredContext;
-      participant.brief.summary = brief.summary;
+      const summary = this.ensureCorrectionReflected(brief.summary, correction);
+      participant.brief.summary = summary;
       await this.sessionRepository.save(session);
 
       return {
         session,
-        reply: `${brief.summary}\n\nこれで戦う。「はい」で確定、違うとこあれば送って`,
+        reply: `${summary}\n\nこれで戦う。「はい」で確定、違うとこあれば送って`,
         confirmed: false,
         movedToGoalSetting: false,
       };
@@ -129,10 +129,29 @@ export class ConfirmBriefUseCase {
     }
 
     const cleaned = cleanedLines.join("\n").trim();
-    if (cleaned.length < MINIMUM_CORRECTION_LENGTH) {
+    if (cleaned.length === 0) {
       return null;
     }
 
     return cleaned;
+  }
+
+  private ensureCorrectionReflected(summary: string, correction: string): string {
+    if (this.isCorrectionReflected(summary, correction)) {
+      return summary;
+    }
+
+    return `最新の修正では「${correction}」が正しい。\n\n${summary}`;
+  }
+
+  private isCorrectionReflected(summary: string, correction: string): boolean {
+    return this.includesNormalized(summary, correction);
+  }
+
+  private includesNormalized(text: string, search: string): boolean {
+    const normalize = (value: string) =>
+      value.replace(NORMALIZE_SUMMARY_PATTERN, "");
+
+    return normalize(text).includes(normalize(search));
   }
 }
