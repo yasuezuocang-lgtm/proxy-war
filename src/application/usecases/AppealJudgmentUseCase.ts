@@ -9,12 +9,12 @@ import type { CourtLevel } from "../../domain/value-objects/CourtLevel.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 
-// SPEC §6.8 の上告受理ユースケース。
+// 上告受理ユースケース。
 //
 // appeal_pending フェーズで敗者（または引き分け時の任意の側）から異議内容を受け取り、
 // Appeal エンティティを生成して新しい審級ラウンドを作る。
 // 受理後の遷移は SessionStateMachine.acceptAppeal に委譲する（現状は judging へ直行し、
-// 上告審では A/B 代理人の対話を行わず審判 AI のみで再評価する仕様 — DebateOrchestrator
+// 上告審では A/B 代理人の対話を行わず審判 AI のみで再評価する仕様 — DebateCoordinator
 // 側のコメントを参照）。
 export interface AppealJudgmentInput {
   sessionId: string;
@@ -57,7 +57,7 @@ export class AppealJudgmentUseCase {
       throw new DomainError("前審の判定が存在しないため上告できません。");
     }
 
-    // createAppeal() が SPEC §6.8 のドメイン制約を全て検証する：
+    // createAppeal() が上告ドメイン制約を全て検証する：
     // - 引き分けからの上告禁止（ただし appealableSides に乗っている時点でルートでは弾かれている）
     // - 最高裁からの上告禁止
     // - 勝者からの上告禁止

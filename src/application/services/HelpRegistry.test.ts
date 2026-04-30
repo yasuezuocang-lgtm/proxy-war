@@ -30,7 +30,7 @@ test("セッション無しでは本音入力とリセットを案内する", ()
   assert.ok(msg.startsWith("今できる操作:"));
   assert.match(msg, /本音をそのまま送る/);
   assert.match(msg, /リセット/);
-  // SPEC §7.3: preparing 中に「ゴール」「上告」等を案内しない
+  // preparing 中に「ゴール」「上告」等を案内しない
   assert.doesNotMatch(msg, /ゴール/);
   assert.doesNotMatch(msg, /上告/);
 });

@@ -13,15 +13,23 @@ class RecordingMessageGateway implements MessageGateway {
   readonly dms: { side: "A" | "B"; message: string }[] = [];
   constructor(private readonly unregisteredSides: ("A" | "B")[] = []) {}
 
-  async sendDm(side: "A" | "B", message: string): Promise<void> {
-    if (this.unregisteredSides.includes(side)) {
-      throw new Error(`${side}側のDMチャンネルが未登録です。`);
+  async sendDmToA(message: string): Promise<void> {
+    if (this.unregisteredSides.includes("A")) {
+      throw new Error("A側のDMチャンネルが未登録です。");
     }
-    this.dms.push({ side, message });
+    this.dms.push({ side: "A", message });
+  }
+
+  async sendDmToB(message: string): Promise<void> {
+    if (this.unregisteredSides.includes("B")) {
+      throw new Error("B側のDMチャンネルが未登録です。");
+    }
+    this.dms.push({ side: "B", message });
   }
 
   async sendTalkMessage(): Promise<void> {}
-  async sendTyping(): Promise<void> {}
+  async sendTypingToA(): Promise<void> {}
+  async sendTypingToB(): Promise<void> {}
 }
 
 function makeSession(params: {

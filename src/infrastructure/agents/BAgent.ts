@@ -4,7 +4,6 @@ import type {
   AgentTurnInput,
   AgentTurnResult,
   HearingAnswerReview,
-  LegacyAgentTurnResult,
   ParticipantAgent,
   PublicTurn,
   ReviewHearingAnswerInput,
@@ -16,9 +15,10 @@ import type {
 } from "../../application/ports/LlmGateway.js";
 import type {
   AgentPersonality,
-  StrategyMemo,
+  StrategyNote,
 } from "../../domain/entities/AgentContext.js";
 import { COURT_LABELS } from "../../domain/value-objects/CourtLevel.js";
+import { IsolationPolicy } from "../../domain/policies/IsolationPolicy.js";
 import {
   B_AGENT_PERSONALITY,
   B_HEARING_PATTERN,
@@ -29,26 +29,25 @@ import {
 
 interface BSessionMemory {
   hearingAnswers: string[];
-  strategyMemo: StrategyMemo[];
+  strategyMemo: StrategyNote[];
 }
 
-// B 側専属代理人（SPEC §8.2）。
+// B 側専属代理人。
 // - Base クラス継承なし・A 側と実装を共有しない独立クラス
 // - A 側の brief / context / memo には一切アクセスしない（OwnBrief<"B"> で型封じ）
-// - SPEC §8.2 の ParticipantAgent<"B"> を実装
-// - DebateOrchestrator（P1-6 で縮退予定）から呼ばれる Legacy 互換メソッド
-//   (generateTurn / resetSession / suggestAppealPoints / getLastBrief) は、
-//   bot/client.ts の Adapter が結線する公開メソッドとしてこのクラスに残す。
+// - ParticipantAgent<"B"> を実装
+// - DebateAgent<"B"> 契約（resetSession / suggestAppealPoints / getLastBrief）も
+//   満たす。DebateCoordinator が直接呼ぶ。
 export class BAgent implements ParticipantAgent<"B"> {
   readonly side = "B" as const;
   readonly personality: AgentPersonality = B_AGENT_PERSONALITY;
 
   private readonly memoryBySession = new Map<string, BSessionMemory>();
   private readonly stashedBriefBySession = new Map<string, StructuredBrief>();
-  // P1-12/H3: B側が直前に投げた HEARING の質問を保持して、次の absorbHearingAnswer で
+  // B側が直前に投げた HEARING の質問を保持して、次の absorbHearingAnswer で
   // Q+A を 1 エントリとして戦術メモに構造化追記する。executeTurn と
   // reviewHearingAnswer の両経路で書き込み、absorb 実行時に delete して使い切る。
-  // AAgent と機能は揃えるが、コードは共有せず B 側に閉じた独立実装にする（SPEC §8.2）。
+  // AAgent と機能は揃えるが、コードは共有せず B 側に閉じた独立実装にする。
   private readonly lastHearingQuestionBySession = new Map<string, string>();
   private mostRecentSessionId: string | null = null;
 
@@ -57,26 +56,32 @@ export class BAgent implements ParticipantAgent<"B"> {
     private readonly llmGateway: ParticipantLlmGateway
   ) {}
 
-  // ── SPEC §8.2 新インターフェース ───────────────────────────
+  // ── ParticipantAgent インターフェース ───────────────────────────
 
   async generateOpeningTurn(
     input: AgentTurnInput<"B">
   ): Promise<AgentTurnResult> {
+    IsolationPolicy.assertOwnBriefAccess("B", input.brief);
+    IsolationPolicy.logSideOperation("BAgent.generateOpeningTurn", "B");
     return this.executeTurn(input);
   }
 
   async generateReplyTurn(
     input: AgentTurnInput<"B">
   ): Promise<AgentTurnResult> {
+    IsolationPolicy.assertOwnBriefAccess("B", input.brief);
+    IsolationPolicy.logSideOperation("BAgent.generateReplyTurn", "B");
     return this.executeTurn(input);
   }
 
   async absorbHearingAnswer(
     input: AbsorbHearingAnswerInput<"B">
   ): Promise<void> {
+    IsolationPolicy.assertOwnBriefAccess("B", input.currentStructuredContext);
+    IsolationPolicy.logSideOperation("BAgent.absorbHearingAnswer", "B");
     const memory = this.rememberSession(input.sessionId);
     memory.hearingAnswers.push(input.answer);
-    // P1-12/H3: 直前に B 側が投げた質問が手元にあれば、戦術メモは
+    // 直前に B 側が投げた質問が手元にあれば、戦術メモは
     // 「質問→回答」のペア形式で追記する。無い時（外部差し込みなど）は
     // 回答だけを memo に残して後方互換を維持する。
     const askedQuestion = this.lastHearingQuestionBySession.get(input.sessionId);
@@ -92,21 +97,24 @@ export class BAgent implements ParticipantAgent<"B"> {
     // 追撃質問は reviewHearingAnswer が改めて書き込む。
     this.lastHearingQuestionBySession.delete(input.sessionId);
 
-    // SPEC §8.2 は Promise<void>。ただし DebateOrchestrator（Legacy 経路）は
-    // 追記後の StructuredBrief を必要とするため、ここで生成した brief は
+    // absorbHearingAnswer は Promise<void>。ただし DebateCoordinator は session.agentMemoryB
+    // 更新で追記後の StructuredBrief を必要とするため、ここで生成した brief は
     // stashedBriefBySession に置き、getLastBrief() で取り出せるようにする。
     const integrated = await this.llmGateway.appendBrief({
+      side: "B",
       currentStructuredContext: input.currentStructuredContext,
       additionalInput: input.answer,
     });
     this.stashedBriefBySession.set(input.sessionId, integrated);
   }
 
-  // SPEC §6.6 / P1-11（H2）: ヒアリング回答が具体的事実として使えるかを判定し、
-  // 浅ければ追撃質問を返す。A 側と独立に BAgent に閉じて実装（SPEC §8.2）。
+  // ヒアリング回答が具体的事実として使えるかを判定し、
+  // 浅ければ追撃質問を返す。A 側と独立に BAgent に閉じて実装。
   async reviewHearingAnswer(
     input: ReviewHearingAnswerInput<"B">
   ): Promise<HearingAnswerReview> {
+    IsolationPolicy.assertOwnBriefAccess("B", input.currentStructuredContext);
+    IsolationPolicy.logSideOperation("BAgent.reviewHearingAnswer", "B");
     const reviewSystem = `お前はB側専属代理人。Bへ投げた質問と、Bが返してきた回答を付き合わせて、
 反論で使えるだけの具体性が回答に乗ったか判定する。
 
@@ -151,7 +159,7 @@ export class BAgent implements ParticipantAgent<"B"> {
     }
     const reason =
       (hearing[2] || "").trim() || "Bの回答に事実が乗っていないため";
-    // P1-12/H3: 追撃質問も次の absorbHearingAnswer で Q+A を束ねるためにキャッシュ。
+    // 追撃質問も次の absorbHearingAnswer で Q+A を束ねるためにキャッシュ。
     this.lastHearingQuestionBySession.set(input.sessionId, question);
     return { type: "followup", question, reason };
   }
@@ -164,19 +172,7 @@ export class BAgent implements ParticipantAgent<"B"> {
     return memory.strategyMemo.map((entry) => entry.content).join("\n");
   }
 
-  // ── Legacy 互換メソッド（P1-6 の DebateCoordinator 移行まで） ─────
-  // クラスに implements LegacyParticipantAgent<"B"> は付けない。
-  // Adapter 側で必要メソッドだけ取り出すためにこのメソッド群を残す。
-
-  async generateTurn(
-    input: AgentTurnInput<"B">
-  ): Promise<LegacyAgentTurnResult> {
-    const result = await this.executeTurn(input);
-    if (result.type === "hearing") {
-      return { type: "hearing", question: result.question };
-    }
-    return result;
-  }
+  // ── DebateAgent<"B"> 契約メソッド ──────────────────────────
 
   resetSession(sessionId: string): void {
     this.memoryBySession.delete(sessionId);
@@ -188,6 +184,8 @@ export class BAgent implements ParticipantAgent<"B"> {
   }
 
   async suggestAppealPoints(input: SuggestAppealInput<"B">): Promise<string> {
+    IsolationPolicy.assertOwnBriefAccess("B", input.brief);
+    IsolationPolicy.logSideOperation("BAgent.suggestAppealPoints", "B");
     const system = buildBAppealSuggestionPrompt({
       ownBrief: input.brief,
       goal: input.goal,
@@ -225,7 +223,7 @@ export class BAgent implements ParticipantAgent<"B"> {
   }
 
   // absorbHearingAnswer で生成した StructuredBrief を取り出す。
-  // Adapter 経由で DebateOrchestrator が participant.brief を更新する。
+  // Adapter 経由で DebateCoordinator が session.agentMemoryB を更新する。
   getLastBrief(sessionId: string): StructuredBrief | null {
     return this.stashedBriefBySession.get(sessionId) ?? null;
   }
@@ -254,7 +252,7 @@ export class BAgent implements ParticipantAgent<"B"> {
     let raw = await this.chat(baseMessages);
     let hearing = raw.match(B_HEARING_PATTERN);
 
-    // P1-9/H1: HEARING の質問が抽象的（「状況を聞かせて」等）なら一度だけ
+    // HEARING の質問が抽象的（「状況を聞かせて」等）なら一度だけ
     // 書き直しを要求する。具体性マーカー（いつ/誰/何/どこ/数字）を強制。
     if (hearing && !BAgent.isConcreteHearingQuestion(hearing[1].trim())) {
       const retryMessages: LLMMessage[] = [
@@ -272,14 +270,14 @@ export class BAgent implements ParticipantAgent<"B"> {
 
     if (hearing) {
       const question = hearing[1].trim();
-      // P1-8/H4: 武器リストに既に情報がある時は HEARING を乱発させず、
+      // 武器リストに既に情報がある時は HEARING を乱発させず、
       // コード側で message に変換する（プロンプト制約と二重で守る）。
       if (memory.hearingAnswers.length > 0) {
         return { type: "message", message: question };
       }
       const reason =
         (hearing[2] || "").trim() || "B側の反論材料が足りないため";
-      // P1-12/H3: 次の absorbHearingAnswer で質問と回答を 1 エントリに束ねるため
+      // 次の absorbHearingAnswer で質問と回答を 1 エントリに束ねるため
       // B 側の質問文をキャッシュ。absorb 実行時に捨てて寿命は 1 往復だけ。
       this.lastHearingQuestionBySession.set(input.sessionId, question);
       return { type: "hearing", question, reason };
@@ -288,10 +286,10 @@ export class BAgent implements ParticipantAgent<"B"> {
     return { type: "message", message: raw.trim() };
   }
 
-  // P1-9/H1: ヒアリング質問の具体性判定。
+  // ヒアリング質問の具体性判定。
   // 5W1H（いつ・誰・何・どこ・なぜ・どれ・どの）、頻度語（毎日/毎週/毎回）、
   // 事実確認語（実際・本当・具体）、数字のいずれかを含めば具体質問とみなす。
-  // A 側と独立に BAgent に閉じ込める（SPEC §8.2「コード非共有」のため重複）。
+  // A 側と独立に BAgent に閉じ込める（コード非共有のため重複）。
   private static isConcreteHearingQuestion(question: string): boolean {
     return /いつ|誰|何|どこ|なぜ|どれ|どの|毎|実際|本当|具体|[0-9０-９]/.test(
       question

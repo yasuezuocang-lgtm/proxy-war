@@ -8,6 +8,7 @@ import { randomBytes } from "crypto";
 import { EncryptedSessionRepository } from "./EncryptedSessionRepository.js";
 import { Session } from "../../domain/entities/Session.js";
 import { SessionPolicy } from "../../domain/policies/SessionPolicy.js";
+import { asOwnBrief } from "../../application/ports/ParticipantAgent.js";
 import type { Judgment } from "../../domain/entities/Judgment.js";
 import type { Appeal } from "../../domain/entities/Appeal.js";
 
@@ -32,22 +33,18 @@ function seedSession(id: string, guildId: string): Session {
   session.topic = "お題テスト";
   session.appealableSides = ["A"];
   session.participants.A.phase = "ready";
-  session.participants.A.brief = {
-    rawInputs: ["生本音A"],
-    structuredContext: "整理A",
-    summary: "要約A",
-    confirmedAt: 200,
-    goal: "勝つ",
-  };
+  session.agentMemoryA.rawInputs.push("生本音A");
+  session.agentMemoryA.privateBrief = asOwnBrief("A", "整理A");
+  session.agentMemoryA.briefSummary = "要約A";
+  session.agentMemoryA.confirmedAt = 200;
+  session.agentMemoryA.publicGoal = "勝つ";
   session.participants.A.followUpCount = 2;
   session.participants.B.phase = "ready";
-  session.participants.B.brief = {
-    rawInputs: ["生本音B"],
-    structuredContext: "整理B",
-    summary: "要約B",
-    confirmedAt: 300,
-    goal: null,
-  };
+  session.agentMemoryB.rawInputs.push("生本音B");
+  session.agentMemoryB.privateBrief = asOwnBrief("B", "整理B");
+  session.agentMemoryB.briefSummary = "要約B";
+  session.agentMemoryB.confirmedAt = 300;
+  session.agentMemoryB.publicGoal = null;
 
   const round = session.createRound("district");
   round.turns.push({ speakerSide: "A", message: "おらー", createdAt: 400 });
@@ -138,12 +135,12 @@ test("EncryptedSessionRepository: save→findById でセッションが復元さ
   assert.equal(loaded!.policy.maxTurns, 6);
   assert.equal(loaded!.policy.maxAppeals, 1);
 
-  // participant の brief が保持されている
+  // agentMemory が保持されている
   assert.equal(loaded!.participants.A.phase, "ready");
-  assert.deepEqual(loaded!.participants.A.brief.rawInputs, ["生本音A"]);
-  assert.equal(loaded!.participants.A.brief.goal, "勝つ");
+  assert.deepEqual(loaded!.agentMemoryA.rawInputs, ["生本音A"]);
+  assert.equal(loaded!.agentMemoryA.publicGoal, "勝つ");
   assert.equal(loaded!.participants.A.followUpCount, 2);
-  assert.equal(loaded!.participants.B.brief.summary, "要約B");
+  assert.equal(loaded!.agentMemoryB.briefSummary, "要約B");
 
   // round と判決と異議が保持されている
   assert.equal(loaded!.rounds.length, 1);

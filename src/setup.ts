@@ -8,7 +8,7 @@ import { LLM_PROVIDERS, type LLMProvider } from "./config.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(__dirname, "../.env");
 
-// SPEC §6「暗号化セッション保存」準拠:
+// 暗号化セッション保存ポリシー:
 // ENCRYPTION_KEY は一度生成したら再生成してはならない（再生成すると過去セッションが復号不能になる）。
 // 既存 .env に有効な ENCRYPTION_KEY があれば保持し、無い場合のみ 32 bytes を新規生成する。
 export function resolveEncryptionKey(envPath: string): {

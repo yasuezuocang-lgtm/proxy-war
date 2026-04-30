@@ -3,7 +3,7 @@ import type {
   TalkSpeaker,
 } from "../ports/MessageGateway.js";
 
-// P1-21: LLM 呼び出し中に Discord の「入力中...」を継続表示するためのヘルパ。
+// LLM 呼び出し中に Discord の「入力中...」を継続表示するためのヘルパ。
 // Discord の typing は送ってから ~10 秒で自動消滅するので、長時間の LLM 呼び出し中は
 // TYPING_REFRESH_INTERVAL_MS 間隔で再送する必要がある。
 // withTyping() に async 処理を渡すと、処理の開始〜完了（成功/例外問わず）の間
@@ -73,7 +73,11 @@ export class TypingIndicator {
 
   private async sendOnce(target: TypingTarget): Promise<void> {
     if (target.kind === "dm") {
-      await this.gateway.sendTyping(target.side);
+      if (target.side === "A") {
+        await this.gateway.sendTypingToA();
+      } else {
+        await this.gateway.sendTypingToB();
+      }
       return;
     }
     // #talk typing は optional。実装していない gateway（一部のテスト Fake）では

@@ -1,7 +1,7 @@
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import { COURT_LABELS, type CourtLevel } from "../../domain/value-objects/CourtLevel.js";
 
-// SPEC §7.2: 各フェーズ遷移時に 1 回だけ「次に何をすればいいか」を案内する。
+// 各フェーズ遷移時に 1 回だけ「次に何をすればいいか」を案内する。
 // SessionStateMachine は状態遷移時に TransitionEvent を emit し、
 // 呼び出し側は guidanceFor() で案内文を取り出して MessageGateway へ流す。
 // - DM 向け案内: 該当サイドの依頼人に送る（preparing 系の個別案内など）
@@ -41,7 +41,7 @@ export type Guidance =
   | { target: "talk"; text: string };
 
 // TransitionEvent → 案内文の純関数マップ。
-// 返すメッセージは「次の操作」を1つだけ示す（情報過多防止 — SPEC §7.2）。
+// 返すメッセージは「次の操作」を1つだけ示す（情報過多防止）。
 // target===dm は該当側にのみ、target===talk は #talk に公開投稿する想定。
 export function guidanceFor(event: TransitionEvent): Guidance[] {
   switch (event.type) {

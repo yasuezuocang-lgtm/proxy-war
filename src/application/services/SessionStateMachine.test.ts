@@ -4,8 +4,8 @@ import { SessionStateMachine } from "./SessionStateMachine.js";
 import { Session } from "../../domain/entities/Session.js";
 import { SessionPolicy } from "../../domain/policies/SessionPolicy.js";
 
-// SPEC §6.8 / P1-15: APPEAL_WINDOW_MS 経過時の AppealExpired イベント。
-// タイマー駆動は DebateOrchestrator 側の責務だが、ここでは純粋関数としての
+// APPEAL_WINDOW_MS 経過時の AppealExpired イベント。
+// タイマー駆動は DebateCoordinator 側の責務だが、ここでは純粋関数としての
 // 状態遷移と返却イベントの形を検証する。
 function makeAppealPendingSession(
   courtLevel: "district" | "high" | "supreme" = "district"

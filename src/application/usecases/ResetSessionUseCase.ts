@@ -3,10 +3,10 @@ import type { MessageGateway } from "../ports/MessageGateway.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 
-// SPEC §6.10 / P1-25: 依頼人の DM「リセット」「reset」で現セッションを破棄し、
+// 依頼人の DM「リセット」「reset」で現セッションを破棄し、
 // 両者に通知したうえで即座に新規セッションを始められる状態へ戻す。
 //
-// SPEC §7.4 より、リセットは「全フェーズ」で効く必要がある（preparing/ready/
+// リセットは「全フェーズ」で効く必要がある（preparing/ready/
 // debating/hearing/judging/appeal_pending/finished 全て）。SessionStateMachine.reset
 // は phase 遷移の assert を行わないため、どの phase からでも呼べる。
 //
@@ -49,14 +49,18 @@ export class ResetSessionUseCase {
     await this.sessionRepository.save(session);
 
     const notifiedSides: ParticipantSide[] = [];
-    for (const side of ["A", "B"] as const) {
-      try {
-        await this.messageGateway.sendDm(side, RESET_NOTICE);
-        notifiedSides.push(side);
-      } catch {
-        // DM チャンネル未登録側（まだ本人が DM していない側）はスキップ。
-        // 相手が初めて DM してきた時に通常フローで対応する。
-      }
+    try {
+      await this.messageGateway.sendDmToA(RESET_NOTICE);
+      notifiedSides.push("A");
+    } catch {
+      // DM チャンネル未登録側（まだ本人が DM していない側）はスキップ。
+      // 相手が初めて DM してきた時に通常フローで対応する。
+    }
+    try {
+      await this.messageGateway.sendDmToB(RESET_NOTICE);
+      notifiedSides.push("B");
+    } catch {
+      // 同上。
     }
 
     return {

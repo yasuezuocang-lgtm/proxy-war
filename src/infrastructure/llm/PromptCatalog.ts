@@ -4,51 +4,68 @@ import {
   PROBE_PROMPT,
   REVISION_REFLECTION_PROMPT,
   SLOT_EXTRACT_PROMPT,
-  appealSuggestionPrompt,
   judgePrompt,
-  proxyBotPrompt,
   type JudgeCourtLevel,
 } from "../../llm/prompts.js";
 
+// A 用 / B 用エントリを独立に持つ。
+// 中身が同一でも別エントリで提供することで、将来 A/B で異なる戦略・口調を
+// 採用できる構造を確保する。判定（審判）のみ単一エントリ（中立・両側を見る）。
 export class PromptCatalog {
-  slotExtract(): string {
+  // ── slot 抽出（依頼人入力 → 構造化ブリーフ） ──
+  slotExtractA(): string {
+    return SLOT_EXTRACT_PROMPT;
+  }
+  slotExtractB(): string {
     return SLOT_EXTRACT_PROMPT;
   }
 
-  append(): string {
+  // ── 追加発言の取り込み ──
+  appendA(): string {
+    return APPEND_PROMPT;
+  }
+  appendB(): string {
     return APPEND_PROMPT;
   }
 
-  probe(): string {
+  // ── 追加質問（プローブ） ──
+  probeA(): string {
+    return PROBE_PROMPT;
+  }
+  probeB(): string {
     return PROBE_PROMPT;
   }
 
-  brief(): string {
+  // ── 確認用要約（ブリーフ） ──
+  briefA(): string {
+    return BATTLE_BRIEF_PROMPT;
+  }
+  briefB(): string {
     return BATTLE_BRIEF_PROMPT;
   }
 
-  revisionReflection(): string {
+  // ── 訂正・追加発言の反映 ──
+  revisionReflectionA(): string {
+    return REVISION_REFLECTION_PROMPT;
+  }
+  revisionReflectionB(): string {
     return REVISION_REFLECTION_PROMPT;
   }
 
-  proxyBot(side: "A" | "B", ownContext: string): string {
-    return proxyBotPrompt(side, ownContext, "fight");
-  }
-
+  // ── 審判（中立・両側を見る唯一の存在） ──
   judge(courtLevel: JudgeCourtLevel = "district"): string {
     return judgePrompt("fight", courtLevel);
   }
 
-  appealSuggestion(
-    side: "A" | "B",
-    ownBrief: string,
-    goal: string | null,
-    nextCourtLabel: string
-  ): string {
-    return appealSuggestionPrompt(side, ownBrief, goal, nextCourtLabel);
+  // ── 慰め文（敗者専用） ──
+  consolationA(loserContext: string, judgmentHistory: string): string {
+    return this.buildConsolation(loserContext, judgmentHistory);
+  }
+  consolationB(loserContext: string, judgmentHistory: string): string {
+    return this.buildConsolation(loserContext, judgmentHistory);
   }
 
-  consolation(loserContext: string, judgmentHistory: string): string {
+  private buildConsolation(loserContext: string, judgmentHistory: string): string {
     return `お前は代理戦争の担当者。複数回戦って負けた依頼人に最後のメッセージを送る。
 
 【負けた側の背景】

@@ -2,9 +2,9 @@ import type { AgentPersonality } from "../../../domain/entities/AgentContext.js"
 import type { CourtLevel } from "../../../domain/value-objects/CourtLevel.js";
 import { COURT_LABELS } from "../../../domain/value-objects/CourtLevel.js";
 
-// B代理人の人格メタデータ（SPEC §8.3）。
-// A代理・審判とは別人格・別記憶。SPEC §11.2 S5 で「A/B/審判 の文体・視点が
-// 明確に異なる」ことが求められるため、A の直球タメ口に対して、B は
+// B代理人の人格メタデータ。
+// A代理・審判とは別人格・別記憶。「A/B/審判 の文体・視点が
+// 明確に異なる」ことを担保するため、A の直球タメ口に対して、B は
 // 相手の言い分の綻びを拾って論理で押し返す冷静さを軸にする。
 export const B_AGENT_PERSONALITY: AgentPersonality = {
   id: "b-agent-v1",
@@ -17,7 +17,7 @@ export const B_AGENT_PERSONALITY: AgentPersonality = {
 };
 
 // ヒアリング発動の目印。B代理専用の正規表現定数。
-// 書式自体は SPEC H5 の「質問＋理由の併記」を満たすため A と同形だが、
+// 書式自体は「質問＋理由の併記」を満たすため A と同形だが、
 // 定数・パース経路は A と独立に持つ（コード共有なし）。
 export const B_HEARING_PATTERN = /^\s*\[HEARING:(.+?)(?:\|(.+?))?\]\s*$/s;
 

@@ -2,7 +2,7 @@ import type { SessionRepository } from "../ports/SessionRepository.js";
 import type { MessageGateway } from "../ports/MessageGateway.js";
 import type { SessionPhase } from "../../domain/value-objects/SessionPhase.js";
 
-// SPEC §6.9 / P1-19: Bot 起動時のセッション復元。
+// Bot 起動時のセッション復元。
 // EncryptedSessionRepository から前回の active セッションを探し、
 // 現在の phase に応じて「どう再開するか」を決める司会前段の処理。
 //

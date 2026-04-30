@@ -1,38 +1,46 @@
-# proxy-war 再構築ドキュメント
+# proxy-war 再構築仕様書
 
-## 目的
+## 1. 目的
 
-- 現行プロトタイプを仕様駆動で再構築するための入口
+現行プロトタイプを破棄し、**A 側エージェントと B 側エージェントの完全分離**を中核に据えた新アーキテクチャへ作り直す。
 
-## 文書一覧
+## 2. 中核原則
 
-- `requirements.md`: 再構築後に満たすべき要件
-- `state-machine.md`: セッション状態と参加者状態の遷移
-- `architecture.md`: 理想アーキテクチャと責務分割
-- `use-cases.md`: 現在実装に沿ったユースケース整理
-- `dedicated-agents.md`: A/B 専属エージェント化の設計
-- `roadmap.md`: 実装移行の順序とマイルストーン
+このプロダクトの本質は次の一文に尽きる。
 
-## 読む順番
+> 1 人の AI が帽子をかぶり替えて A と B を演じるのではなく、別々に存在する 2 人の代理人が、それぞれの依頼人の利益だけを追って戦う。
 
-1. `requirements.md`
-2. `state-machine.md`
-3. `architecture.md`
-4. `use-cases.md`
-5. `dedicated-agents.md`
-6. `roadmap.md`
+仕様・設計・実装・運用のすべての判断はこの原則を優先する。
 
-## 使い方
+## 3. 文書一覧
 
-- 要件議論では `requirements.md` を正本にする
-- 実装着手前に `state-machine.md` と `architecture.md` を見直す
-- 実装責務を確認したい時は `use-cases.md` を見る
-- A/B 分離の設計を詰める時は `dedicated-agents.md` を見る
-- タスク分解時は `roadmap.md` を基準にフェーズを切る
+| ファイル | 内容 |
+| --- | --- |
+| `vision.md` | プロダクト思想と非交渉原則 |
+| `requirements.md` | 機能要件と非機能要件 |
+| `agents.md` | A/B 完全分離仕様（中核） |
+| `architecture.md` | レイヤー構成と責務分割 |
+| `use-cases.md` | ユースケース一覧（後続） |
+| `gap-analysis.md` | 現状コード対新仕様の差分（後続） |
+| `migration-plan.md` | 移行手順（後続） |
 
-## 実装状況
+## 4. 読む順番
 
-- 入力収集、要約確認、ゴール設定は新アーキテクチャへ移行済み
-- 代理対話、ヒアリング、判定も新アーキテクチャへ移行済み
-- 旧 `src/core` は撤去済み
-- 現在のランタイム実装は `src/presentation` / `src/application` / `src/domain` / `src/infrastructure` を使用
+1. `vision.md` — なぜ作り直すか
+2. `agents.md` — 何を守るか（最重要）
+3. `requirements.md` — 何を満たすか
+4. `architecture.md` — どう作るか
+
+## 5. スコープ外
+
+新仕様では扱わない。
+
+- 文体・人格・口調設計（実装層のプロンプト調整に留める）
+- 多人数対戦
+- Discord 以外の本番 UI
+- Web 管理画面
+- 課金・分析
+
+## 6. 旧仕様
+
+旧 `docs/rebuild/` の内容は git 履歴に残る。新仕様と矛盾する記述があった場合、本ディレクトリ内の現行版が正本。

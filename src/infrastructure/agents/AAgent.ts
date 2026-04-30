@@ -4,7 +4,6 @@ import type {
   AgentTurnInput,
   AgentTurnResult,
   HearingAnswerReview,
-  LegacyAgentTurnResult,
   ParticipantAgent,
   PublicTurn,
   ReviewHearingAnswerInput,
@@ -16,9 +15,10 @@ import type {
 } from "../../application/ports/LlmGateway.js";
 import type {
   AgentPersonality,
-  StrategyMemo,
+  StrategyNote,
 } from "../../domain/entities/AgentContext.js";
 import { COURT_LABELS } from "../../domain/value-objects/CourtLevel.js";
+import { IsolationPolicy } from "../../domain/policies/IsolationPolicy.js";
 import {
   A_AGENT_PERSONALITY,
   A_HEARING_PATTERN,
@@ -29,23 +29,22 @@ import {
 
 interface ASessionState {
   hearingAnswers: string[];
-  strategyMemo: StrategyMemo[];
+  strategyMemo: StrategyNote[];
 }
 
-// A 側専属代理人（SPEC §8.2）。
+// A 側専属代理人。
 // - Base クラス継承なしの独立実装。B 側とコードを共有しない
 // - B 側の brief / context には一切アクセスしない（型レベルでも OwnBrief<"A"> で強制）
-// - SPEC §8.2 の新 ParticipantAgent<"A"> を実装する
-// - DebateOrchestrator（P1-6 で縮退予定）から使うための Legacy 互換メソッド
-//   （generateTurn / resetSession / suggestAppealPoints / getLastBrief）は
-//   bot/client.ts のインライン Adapter が呼ぶ公開メソッドとして残す
+// - ParticipantAgent<"A"> を実装する
+// - DebateAgent<"A"> 契約（resetSession / suggestAppealPoints / getLastBrief）も
+//   満たす。DebateCoordinator が直接呼ぶ。
 export class AAgent implements ParticipantAgent<"A"> {
   readonly side = "A" as const;
   readonly personality: AgentPersonality = A_AGENT_PERSONALITY;
 
   private readonly sessions = new Map<string, ASessionState>();
   private readonly lastBriefBySession = new Map<string, StructuredBrief>();
-  // P1-12/H3: 直近に A 側が投げた HEARING の質問を保持し、次の absorbHearingAnswer で
+  // 直近に A 側が投げた HEARING の質問を保持し、次の absorbHearingAnswer で
   // Q+A を 1 エントリに束ねて戦術メモへ構造化追記するためのキャッシュ。
   // runTurn（type:"hearing"）と reviewHearingAnswer（type:"followup"）の両経路で書き込む。
   private readonly lastHearingQuestionBySession = new Map<string, string>();
@@ -56,26 +55,32 @@ export class AAgent implements ParticipantAgent<"A"> {
     private readonly llmGateway: ParticipantLlmGateway
   ) {}
 
-  // ── SPEC §8.2 新インターフェース ─────────────────────────
+  // ── ParticipantAgent インターフェース ─────────────────────────
 
   async generateOpeningTurn(
     input: AgentTurnInput<"A">
   ): Promise<AgentTurnResult> {
+    IsolationPolicy.assertOwnBriefAccess("A", input.brief);
+    IsolationPolicy.logSideOperation("AAgent.generateOpeningTurn", "A");
     return this.runTurn(input);
   }
 
   async generateReplyTurn(
     input: AgentTurnInput<"A">
   ): Promise<AgentTurnResult> {
+    IsolationPolicy.assertOwnBriefAccess("A", input.brief);
+    IsolationPolicy.logSideOperation("AAgent.generateReplyTurn", "A");
     return this.runTurn(input);
   }
 
   async absorbHearingAnswer(
     input: AbsorbHearingAnswerInput<"A">
   ): Promise<void> {
+    IsolationPolicy.assertOwnBriefAccess("A", input.currentStructuredContext);
+    IsolationPolicy.logSideOperation("AAgent.absorbHearingAnswer", "A");
     const state = this.getSessionState(input.sessionId);
     state.hearingAnswers.push(input.answer);
-    // P1-12/H3: 直前に自分が投げた質問が記憶にあれば、戦術メモは「質問→回答」の
+    // 直前に自分が投げた質問が記憶にあれば、戦術メモは「質問→回答」の
     // 構造化エントリとして追記する。キャッシュが無い場合（外部経路から差し込まれた
     // 回答など）は、後方互換で回答文そのものを記録する。
     const askedQuestion = this.lastHearingQuestionBySession.get(input.sessionId);
@@ -91,21 +96,24 @@ export class AAgent implements ParticipantAgent<"A"> {
     // 追撃質問（followup）が来た時は reviewHearingAnswer 側で改めて書き込む。
     this.lastHearingQuestionBySession.delete(input.sessionId);
 
-    // SPEC §8.2 は Promise<void>。返り値は呼び出し側に渡さないが、
-    // 統合された brief は DebateOrchestrator（Legacy 経路）で必要なので
+    // absorbHearingAnswer は Promise<void>。返り値は呼び出し側に渡さないが、
+    // 統合された brief は DebateCoordinator が session.agentMemoryA 更新で必要なので
     // lastBriefBySession に stash し、getLastBrief() で取り出せるようにする。
     const brief = await this.llmGateway.appendBrief({
+      side: "A",
       currentStructuredContext: input.currentStructuredContext,
       additionalInput: input.answer,
     });
     this.lastBriefBySession.set(input.sessionId, brief);
   }
 
-  // SPEC §6.6 / P1-11（H2）: 直近の質問と回答を見て追撃するか判断する。
-  // A 側のロジックを BAgent と共有しない（SPEC §8.2）。
+  // 直近の質問と回答を見て追撃するか判断する。
+  // A 側のロジックを BAgent と共有しない。
   async reviewHearingAnswer(
     input: ReviewHearingAnswerInput<"A">
   ): Promise<HearingAnswerReview> {
+    IsolationPolicy.assertOwnBriefAccess("A", input.currentStructuredContext);
+    IsolationPolicy.logSideOperation("AAgent.reviewHearingAnswer", "A");
     const reviewSystem = `お前はA側専属代理人。依頼人Aに投げた質問と、Aから戻ってきた回答を突き合わせて、
 反論材料として使えるレベルまで具体的に答えが埋まったかを判定する。
 
@@ -150,7 +158,7 @@ export class AAgent implements ParticipantAgent<"A"> {
     }
     const reason =
       (hearing[2] || "").trim() || "Aの回答に事実が埋まっていないため";
-    // P1-12/H3: 追撃質問も次の absorbHearingAnswer で Q+A を束ねるためにキャッシュする。
+    // 追撃質問も次の absorbHearingAnswer で Q+A を束ねるためにキャッシュする。
     this.lastHearingQuestionBySession.set(input.sessionId, question);
     return { type: "followup", question, reason };
   }
@@ -163,19 +171,7 @@ export class AAgent implements ParticipantAgent<"A"> {
     return state.strategyMemo.map((memo) => memo.content).join("\n");
   }
 
-  // ── Legacy 互換メソッド（P1-6 の DebateCoordinator 移行まで） ─────
-  // LegacyParticipantAgent<"A"> を class level で implements せず、
-  // 必要なメソッドだけ残す。Legacy 経路は bot/client.ts の Adapter が結線する。
-
-  async generateTurn(
-    input: AgentTurnInput<"A">
-  ): Promise<LegacyAgentTurnResult> {
-    const result = await this.runTurn(input);
-    if (result.type === "hearing") {
-      return { type: "hearing", question: result.question };
-    }
-    return result;
-  }
+  // ── DebateAgent<"A"> 契約メソッド ──────────────────────────
 
   resetSession(sessionId: string): void {
     this.sessions.delete(sessionId);
@@ -187,6 +183,8 @@ export class AAgent implements ParticipantAgent<"A"> {
   }
 
   async suggestAppealPoints(input: SuggestAppealInput<"A">): Promise<string> {
+    IsolationPolicy.assertOwnBriefAccess("A", input.brief);
+    IsolationPolicy.logSideOperation("AAgent.suggestAppealPoints", "A");
     const system = buildAAppealSuggestionPrompt({
       ownBrief: input.brief,
       goal: input.goal,
@@ -223,8 +221,8 @@ export class AAgent implements ParticipantAgent<"A"> {
     }
   }
 
-  // absorbHearingAnswer で統合された brief を取り出す。Adapter 経由で
-  // DebateOrchestrator が participant.brief を更新するために使う。
+  // absorbHearingAnswer で統合された brief を取り出す。
+  // DebateCoordinator が session.agentMemoryA を更新するために使う。
   getLastBrief(sessionId: string): StructuredBrief | null {
     return this.lastBriefBySession.get(sessionId) ?? null;
   }
@@ -251,7 +249,7 @@ export class AAgent implements ParticipantAgent<"A"> {
     let response = await this.chat(baseMessages);
     let hearingMatch = response.match(A_HEARING_PATTERN);
 
-    // P1-9/H1: HEARING の質問が抽象的（「状況を教えて」等）なら一度だけ
+    // HEARING の質問が抽象的（「状況を教えて」等）なら一度だけ
     // 書き直しを要求する。「いつ・誰・何」を含む具体質問を強制。
     if (
       hearingMatch &&
@@ -272,7 +270,7 @@ export class AAgent implements ParticipantAgent<"A"> {
 
     if (hearingMatch) {
       const question = hearingMatch[1].trim();
-      // P1-8/H4: 武器リストに既に反論材料が積まれている時は、LLM が
+      // 武器リストに既に反論材料が積まれている時は、LLM が
       // 誤発火した HEARING をコード側で抑止し通常発言に変換する。
       // プロンプト制約の二重防御（乱発防止）。
       if (state.hearingAnswers.length > 0) {
@@ -280,7 +278,7 @@ export class AAgent implements ParticipantAgent<"A"> {
       }
       const reason =
         (hearingMatch[2] || "").trim() || "A側の反論材料が足りないため";
-      // P1-12/H3: 次の absorbHearingAnswer で質問と回答を 1 エントリに束ねるため
+      // 次の absorbHearingAnswer で質問と回答を 1 エントリに束ねるため
       // にキャッシュする。absorb 実行時に delete されるので寿命は 1 往復だけ。
       this.lastHearingQuestionBySession.set(input.sessionId, question);
       return { type: "hearing", question, reason };
@@ -289,11 +287,11 @@ export class AAgent implements ParticipantAgent<"A"> {
     return { type: "message", message: response.trim() };
   }
 
-  // P1-9/H1: ヒアリング質問の具体性判定。
+  // ヒアリング質問の具体性判定。
   // 5W1H（いつ・誰・何・どこ・なぜ・どれ・どの）、頻度語（毎日/毎週/毎回）、
   // 事実確認語（実際・本当・具体）、数字（日付・回数）のいずれかを含めば
   // 具体質問とみなす。どれも無ければ抽象質問として再生成を要求する。
-  // B 側と独立したロジックとして AAgent に閉じ込める（SPEC §8.2 コード非共有）。
+  // B 側と独立したロジックとして AAgent に閉じ込める（コード非共有）。
   private static isConcreteHearingQuestion(question: string): boolean {
     return /いつ|誰|何|どこ|なぜ|どれ|どの|毎|実際|本当|具体|[0-9０-９]/.test(
       question

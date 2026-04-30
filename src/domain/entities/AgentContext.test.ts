@@ -4,8 +4,8 @@ import {
   createAgentContext,
   type AgentContext,
   type AgentPersonality,
-  type HearingRecord,
-  type StrategyMemo,
+  type HearingExchange,
+  type StrategyNote,
 } from "./AgentContext.js";
 
 const personality: AgentPersonality = {
@@ -20,7 +20,7 @@ test("createAgentContext returns an empty context with the given side and person
 
   assert.equal(ctx.side, "A");
   assert.equal(ctx.privateBrief, "");
-  assert.deepEqual(ctx.strategyMemo, []);
+  assert.deepEqual(ctx.strategyNotes, []);
   assert.deepEqual(ctx.hearingHistory, []);
   assert.equal(ctx.personality, personality);
   assert.equal(ctx.turnCount, 0);
@@ -37,14 +37,14 @@ test("createAgentContext accepts an initial privateBrief", () => {
   assert.equal(ctx.privateBrief, "友人と喧嘩した。仲直りしたい。");
 });
 
-test("StrategyMemo / HearingRecord / AgentContext の型が期待の形になっている", () => {
-  const memo: StrategyMemo = {
+test("StrategyNote / HearingExchange / AgentContext の型が期待の形になっている", () => {
+  const note: StrategyNote = {
     addedAt: 1,
     content: "相手はゴールを曖昧にしている。",
     source: "hearing_answer",
   };
 
-  const hearing: HearingRecord = {
+  const hearing: HearingExchange = {
     askedAt: 2,
     question: "いつ頃の出来事ですか？",
     reason: "時系列を特定して反論材料にする。",
@@ -54,13 +54,13 @@ test("StrategyMemo / HearingRecord / AgentContext の型が期待の形になっ
 
   const ctx: AgentContext = {
     ...createAgentContext({ side: "A", personality }),
-    strategyMemo: [memo],
+    strategyNotes: [note],
     hearingHistory: [hearing],
     privateBrief: "x",
     turnCount: 1,
   };
 
-  assert.equal(ctx.strategyMemo[0]?.source, "hearing_answer");
+  assert.equal(ctx.strategyNotes[0]?.source, "hearing_answer");
   assert.equal(ctx.hearingHistory[0]?.answer, null);
   assert.equal(ctx.turnCount, 1);
 });

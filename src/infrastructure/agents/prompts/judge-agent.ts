@@ -4,9 +4,9 @@ import type { AgentPersonality } from "../../../domain/entities/AgentContext.js"
 import type { JudgeRoundInput } from "../../../application/ports/LlmGateway.js";
 import type { Judgment } from "../../../domain/entities/Judgment.js";
 
-// 審判エージェントの人格メタデータ（SPEC §8.2 / §8.3 / §7.5）。
+// 審判エージェントの人格メタデータ。
 // A代理人・B代理人とは別人格。対話の採点を「丁寧調」で行う中立の審判。
-// A/B がタメ口で喧嘩するのに対し、審判のみ敬語で重みを出す（SPEC §7.5 のコントラスト）。
+// A/B がタメ口で喧嘩するのに対し、審判のみ敬語で重みを出す（コントラスト演出）。
 export const JUDGE_AGENT_PERSONALITY: AgentPersonality = {
   id: "judge-agent-v1",
   label: "審判官",
@@ -139,7 +139,7 @@ ${JUDGE_OUTPUT_SCHEMA}`;
 
 // 審判エージェントへ渡す user prompt。
 // 背景・ゴール・対話全文・過去判決・今回の異議を構造化して渡す。
-// 対話は第一審（district）の turns のみ。上告審は前審資料＋異議で評価する仕様（SPEC §6.8）。
+// 対話は第一審（district）の turns のみ。上告審は前審資料＋異議で評価する仕様。
 export function buildJudgeUserPrompt(input: JudgeRoundInput): string {
   const parts: string[] = [];
 

@@ -45,7 +45,7 @@ function withClearedEnv<T>(fn: () => T): T {
   }
 }
 
-test("loadAppConfig: env 未設定なら SPEC §9 の本番デフォルト値を返す", () => {
+test("loadAppConfig: env 未設定なら本番デフォルト値を返す", () => {
   withClearedEnv(() => {
     const cfg = loadAppConfig();
     assert.deepEqual(cfg, APP_CONFIG_DEFAULTS);

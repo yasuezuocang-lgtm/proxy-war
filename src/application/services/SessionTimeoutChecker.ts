@@ -2,7 +2,7 @@ import type { Session } from "../../domain/entities/Session.js";
 import type { MessageGateway } from "../ports/MessageGateway.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
 
-// SPEC §6.9 / P1-26: セッションが SESSION_IDLE_TIMEOUT_MS（本番=24時間）無応答なら
+// セッションが SESSION_IDLE_TIMEOUT_MS（本番=24時間）無応答なら
 // 自動でアーカイブし、両者の DM + #talk に通知する。
 //
 // 責務:
@@ -118,10 +118,10 @@ export class SessionTimeoutChecker {
       }
 
       await this.safelyNotify(() =>
-        this.messageGateway.sendDm("A", TIMEOUT_NOTICE_DM)
+        this.messageGateway.sendDmToA(TIMEOUT_NOTICE_DM)
       );
       await this.safelyNotify(() =>
-        this.messageGateway.sendDm("B", TIMEOUT_NOTICE_DM)
+        this.messageGateway.sendDmToB(TIMEOUT_NOTICE_DM)
       );
       await this.safelyNotify(() =>
         this.messageGateway.sendTalkMessage(TIMEOUT_NOTICE_TALK)

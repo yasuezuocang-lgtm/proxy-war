@@ -1,12 +1,12 @@
-import type { Judgment } from "../../domain/entities/Judgment.js";
 import type {
   AppendBriefInput,
   BriefInput,
   ConsolationInput,
-  JudgeRoundInput,
-  LlmGateway,
+  ParticipantLlmGateway,
+  ProbeInput,
   StructuredBrief,
 } from "../../application/ports/LlmGateway.js";
+import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { LLMClient, LLMMessage } from "../../llm/provider.js";
 import { PromptCatalog } from "./PromptCatalog.js";
 
@@ -35,7 +35,7 @@ const LATEST_REVISION_SECTION = "最新の訂正・追加発言";
 const LATEST_REVISION_SECTION_PATTERN =
   /\n?■最新の訂正・追加発言:\s*[\s\S]*?(?=\n■[^:\n]+:|$)/g;
 
-export class PromptDrivenLlmGateway implements LlmGateway {
+export class PromptDrivenLlmGateway implements ParticipantLlmGateway {
   constructor(
     private readonly client: LLMClient,
     private readonly prompts: PromptCatalog = new PromptCatalog()
@@ -43,16 +43,17 @@ export class PromptDrivenLlmGateway implements LlmGateway {
 
   async extractBrief(input: BriefInput): Promise<StructuredBrief> {
     const structuredContext = await this.chat([
-      { role: "system", content: this.prompts.slotExtract() },
+      { role: "system", content: this.slotExtractPrompt(input.side) },
       { role: "user", content: input.rawInputs.join("\n") },
     ]);
 
     const summary = this.sanitizeSummary(
       await this.chat([
-        { role: "system", content: this.prompts.brief() },
+        { role: "system", content: this.briefPrompt(input.side) },
         { role: "user", content: structuredContext },
       ]),
-      structuredContext
+      structuredContext,
+      { side: input.side }
     );
 
     return { structuredContext, summary };
@@ -61,7 +62,7 @@ export class PromptDrivenLlmGateway implements LlmGateway {
   async appendBrief(input: AppendBriefInput): Promise<StructuredBrief> {
     const structuredContext = this.withLatestRevisionSection(
       await this.chat([
-        { role: "system", content: this.prompts.append() },
+        { role: "system", content: this.appendPrompt(input.side) },
         {
           role: "user",
           content:
@@ -74,88 +75,64 @@ export class PromptDrivenLlmGateway implements LlmGateway {
 
     const initialSummary = this.sanitizeSummary(
       await this.chat([
-        { role: "system", content: this.prompts.brief() },
+        { role: "system", content: this.briefPrompt(input.side) },
         { role: "user", content: structuredContext },
       ]),
       structuredContext,
-      { ensureLatestRevision: false }
+      { ensureLatestRevision: false, side: input.side }
     );
     const summary = await this.rethinkSummaryIfLatestRevisionMissing(
       initialSummary,
-      structuredContext
+      structuredContext,
+      input.side
     );
 
     return { structuredContext, summary };
   }
 
-  async generateProbe(structuredContext: string): Promise<string> {
+  async generateProbe(input: ProbeInput): Promise<string> {
     const probe = await this.chat([
-      { role: "system", content: this.prompts.probe() },
-      { role: "user", content: `依頼人の情報:\n${structuredContext}` },
+      { role: "system", content: this.probePrompt(input.side) },
+      { role: "user", content: `依頼人の情報:\n${input.structuredContext}` },
     ]);
 
     return this.sanitizeProbe(probe);
   }
 
-  async judgeRound(input: JudgeRoundInput): Promise<Judgment> {
-    const response = await this.chat([
-      { role: "system", content: this.prompts.judge(input.courtLevel) },
-      {
-        role: "user",
-        content: this.buildJudgeUserPrompt(input),
-      },
-    ]);
-
-    return this.parseJudgment(response);
+  // ── A/B プロンプト解決ヘルパ ─────────────
+  private slotExtractPrompt(side: ParticipantSide): string {
+    return side === "A" ? this.prompts.slotExtractA() : this.prompts.slotExtractB();
   }
-
-  private buildJudgeUserPrompt(input: JudgeRoundInput): string {
-    const parts: string[] = [];
-
-    parts.push(
-      `## 議論のゴール\nA側のゴール: ${input.goalA || "未設定"}\nB側のゴール: ${input.goalB || "未設定"}`
-    );
-    parts.push(`## A側の背景\n${input.contextA}`);
-    parts.push(`## B側の背景\n${input.contextB}`);
-    parts.push(
-      `## 第一審 議論の全文\n${input.dialogue
-        .map((turn) => `${turn.speaker}側: ${turn.message}`)
-        .join("\n\n")}`
-    );
-
-    if (input.previousJudgments.length > 0) {
-      parts.push(
-        `## 過去の審理記録\n${input.previousJudgments
-          .map((judgment, index) => this.formatPreviousJudgment(judgment, index))
-          .join("\n\n")}`
-      );
-    }
-
-    if (input.appeal) {
-      parts.push(
-        `## ${input.appeal.appellantSide}側からの異議\n${input.appeal.content}`
-      );
-    }
-
-    return parts.join("\n\n");
+  private briefPrompt(side: ParticipantSide): string {
+    return side === "A" ? this.prompts.briefA() : this.prompts.briefB();
   }
-
-  private formatPreviousJudgment(judgment: Judgment, index: number): string {
-    const label = index === 0 ? "第一審" : index === 1 ? "再審（高裁）" : `第${index + 1}審`;
-    const winner = judgment.winner === "draw" ? "引き分け" : `${judgment.winner}側`;
-    return (
-      `### ${label}\n` +
-      `勝者: ${winner}\n` +
-      `スコア A:${judgment.totalA} / B:${judgment.totalB}\n` +
-      `総評: ${judgment.summary}`
-    );
+  private appendPrompt(side: ParticipantSide): string {
+    return side === "A" ? this.prompts.appendA() : this.prompts.appendB();
+  }
+  private probePrompt(side: ParticipantSide): string {
+    return side === "A" ? this.prompts.probeA() : this.prompts.probeB();
+  }
+  private revisionReflectionPrompt(side: ParticipantSide): string {
+    return side === "A"
+      ? this.prompts.revisionReflectionA()
+      : this.prompts.revisionReflectionB();
+  }
+  private consolationPrompt(
+    side: ParticipantSide,
+    loserContext: string,
+    judgmentHistory: string
+  ): string {
+    return side === "A"
+      ? this.prompts.consolationA(loserContext, judgmentHistory)
+      : this.prompts.consolationB(loserContext, judgmentHistory);
   }
 
   async generateConsolation(input: ConsolationInput): Promise<string> {
     return this.chat([
       {
         role: "system",
-        content: this.prompts.consolation(
+        content: this.consolationPrompt(
+          input.side,
           input.loserContext,
           input.judgmentHistory.join("\n")
         ),
@@ -195,7 +172,7 @@ export class PromptDrivenLlmGateway implements LlmGateway {
   private sanitizeSummary(
     content: string,
     structuredContext: string,
-    options: { ensureLatestRevision?: boolean } = {}
+    options: { ensureLatestRevision?: boolean; side?: ParticipantSide } = {}
   ): string {
     if (this.isBannedSummaryContent(content)) {
       return this.buildFallbackSummary(structuredContext);
@@ -269,7 +246,8 @@ export class PromptDrivenLlmGateway implements LlmGateway {
 
   private async rethinkSummaryIfLatestRevisionMissing(
     summary: string,
-    structuredContext: string
+    structuredContext: string,
+    side: ParticipantSide
   ): Promise<string> {
     const latestRevision = this.parseStructuredSections(structuredContext)[
       LATEST_REVISION_SECTION
@@ -280,7 +258,7 @@ export class PromptDrivenLlmGateway implements LlmGateway {
 
     const revisedSummary = this.sanitizeSummary(
       await this.chat([
-        { role: "system", content: this.prompts.revisionReflection() },
+        { role: "system", content: this.revisionReflectionPrompt(side) },
         {
           role: "user",
           content:
@@ -290,7 +268,7 @@ export class PromptDrivenLlmGateway implements LlmGateway {
         },
       ]),
       structuredContext,
-      { ensureLatestRevision: false }
+      { ensureLatestRevision: false, side }
     );
 
     return this.ensureLatestRevisionReflected(revisedSummary, structuredContext);
@@ -356,70 +334,4 @@ export class PromptDrivenLlmGateway implements LlmGateway {
     return sections;
   }
 
-  private parseJudgment(content: string): Judgment {
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    let parsed: Partial<Judgment> = {};
-    if (jsonMatch) {
-      try {
-        parsed = JSON.parse(jsonMatch[0]) as Partial<Judgment>;
-      } catch {
-        parsed = {};
-      }
-    }
-
-    // criteria を正規化: 各項目の scoreA/scoreB を 0-5 の整数に丸め、
-    // name/reason を文字列として保障する。
-    const rawCriteria = Array.isArray(parsed.criteria) ? parsed.criteria : [];
-    const criteria = rawCriteria.slice(0, 5).map((raw, index) => ({
-      name: typeof raw?.name === "string" ? raw.name : `項目${index + 1}`,
-      scoreA: this.coerceScore(raw?.scoreA),
-      scoreB: this.coerceScore(raw?.scoreB),
-      reason: typeof raw?.reason === "string" ? raw.reason : "",
-    }));
-
-    // 合計は criteria から導出する。LLM の totalA/totalB は
-    // スコアと自己矛盾している事が多い（例: scoreA=5,scoreB=5 を並べつつ totalA=12,totalB=18）。
-    const totalA = criteria.reduce((sum, c) => sum + c.scoreA, 0);
-    const totalB = criteria.reduce((sum, c) => sum + c.scoreB, 0);
-
-    // winner も数値合計から導出する。reason で「A の敗北」と書きつつ winner="A"
-    // のような矛盾を、機械的に修正する。
-    // criteria が無い場合のみ、LLM の winner を fallback として使う。
-    const computedWinner: Judgment["winner"] =
-      criteria.length === 0
-        ? this.validateWinner(parsed.winner)
-        : totalA > totalB
-          ? "A"
-          : totalA < totalB
-            ? "B"
-            : "draw";
-
-    return {
-      winner: computedWinner,
-      criteria,
-      totalA,
-      totalB,
-      summary:
-        typeof parsed.summary === "string" && parsed.summary.trim()
-          ? parsed.summary
-          : "判定結果の解釈に失敗した。異議があれば送って再審に回す。",
-      zopa: typeof parsed.zopa === "string" ? parsed.zopa : null,
-      wisdom: typeof parsed.wisdom === "string" ? parsed.wisdom : null,
-      angerA: typeof parsed.angerA === "string" ? parsed.angerA : null,
-      angerB: typeof parsed.angerB === "string" ? parsed.angerB : null,
-    };
-  }
-
-  private validateWinner(value: unknown): Judgment["winner"] {
-    if (value === "A" || value === "B" || value === "draw") {
-      return value;
-    }
-    return "draw";
-  }
-
-  private coerceScore(value: unknown): number {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(5, Math.round(n)));
-  }
 }

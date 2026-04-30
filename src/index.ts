@@ -13,7 +13,7 @@ async function main() {
   const llm = await createLLMClient(config);
   console.log(`LLM: ${config.llm.provider} (${config.llm.model})`);
 
-  // SPEC §6.9 / P1-19: セッションは data/sessions/ に AES-256-GCM で暗号化永続化。
+  // セッションは data/sessions/ に AES-256-GCM で暗号化永続化。
   // 起動時に findActiveByGuildId がディスクから前回セッションを自動で読み戻すので、
   // これを startBots に渡すことで「再起動後もセッションが生きている」を実現する。
   const sessionRepository = new EncryptedSessionRepository({

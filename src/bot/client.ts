@@ -9,13 +9,14 @@ import {
 } from "discord.js";
 import type { Config } from "../config.js";
 import type { LLMClient } from "../llm/provider.js";
-import { DebateOrchestrator } from "../application/services/DebateOrchestrator.js";
+import { DebateCoordinator } from "../application/coordinators/DebateCoordinator.js";
 import { SessionStateMachine } from "../application/services/SessionStateMachine.js";
 import { SessionRestorer } from "../application/services/SessionRestorer.js";
 import { InMemorySessionRepository } from "../infrastructure/persistence/InMemorySessionRepository.js";
 import type { SessionRepository } from "../application/ports/SessionRepository.js";
 import { AAgent } from "../infrastructure/agents/AAgent.js";
 import { BAgent } from "../infrastructure/agents/BAgent.js";
+import { JudgeAgent } from "../infrastructure/agents/JudgeAgent.js";
 import { createDiscordInputCoordinator } from "../presentation/discord/createDiscordInputCoordinator.js";
 
 const MESSAGE_BUFFER_MS = 2000;
@@ -32,7 +33,7 @@ interface Deps {
   inputSessionRepository: SessionRepository;
   inputCoordinator: ReturnType<typeof createDiscordInputCoordinator>["coordinator"];
   registerDmChannel: ReturnType<typeof createDiscordInputCoordinator>["registerDmChannel"];
-  debateOrchestrator: DebateOrchestrator;
+  debateCoordinator: DebateCoordinator;
 }
 
 const messageBuffers = new Map<string, BufferedMessage>();
@@ -51,7 +52,7 @@ function createDiscordClient(): Client {
   });
 }
 
-// SPEC §6.9 / P1-19: sessionRepository は呼び出し側（index.ts）から差し込める。
+// sessionRepository は呼び出し側（index.ts）から差し込める。
 // 本番は EncryptedSessionRepository を渡してセッションを暗号化永続化する。
 // 未指定時は InMemorySessionRepository を使い、プロセス寿命だけのセッションに退行する
 // （テスト・開発用フォールバック）。
@@ -105,16 +106,18 @@ export async function startBots(
     getSystemTalkChannel: getTalkChannelA,
   });
 
-  // AAgent / BAgent は SPEC §8.2 準拠の新 ParticipantAgent<Side> に加えて
-  // DebateOrchestrator が要求する suggestAppealPoints / resetSession / getLastBrief
+  // AAgent / BAgent は ParticipantAgent<Side> に加えて
+  // DebateCoordinator が要求する suggestAppealPoints / resetSession / getLastBrief
   // を公開メソッドとして持つ（= DebateAgent<Side> を満たす）。そのまま渡せる。
   const aAgent = new AAgent(llm, llmGateway);
   const bAgent = new BAgent(llm, llmGateway);
-  const debateOrchestrator = new DebateOrchestrator(
+  const judgeAgent = new JudgeAgent(llm);
+  const debateCoordinator = new DebateCoordinator(
     inputSessionRepository,
     new SessionStateMachine(),
     { A: aAgent, B: bAgent },
     llmGateway,
+    judgeAgent,
     messageGateway,
     pendingResponseRegistry
   );
@@ -124,15 +127,11 @@ export async function startBots(
     inputSessionRepository,
     inputCoordinator,
     registerDmChannel,
-    debateOrchestrator,
+    debateCoordinator,
   };
 
-  clientA.once(Events.ClientReady, (client) => {
-    console.log(`Bot A 起動: ${client.user.tag}`);
-  });
-  clientB.once(Events.ClientReady, (client) => {
-    console.log(`Bot B 起動: ${client.user.tag}`);
-  });
+  clientA.once(Events.ClientReady, () => {});
+  clientB.once(Events.ClientReady, () => {});
 
   setupDMHandler(clientA, "A", deps);
   setupDMHandler(clientB, "B", deps);
@@ -142,22 +141,13 @@ export async function startBots(
     clientB.login(config.botB.token),
   ]);
 
-  // P1-19: 永続化されている active セッションを復元する。
+  // 永続化されている active セッションを復元する。
   // mid-debate（debating/judging/hearing/appeal_pending）は安全に再開不可能なため
   // archive + #talk 告知で利用者に「やり直してね」を伝える。
   // preparing/ready はそのまま保持し、次の DM で通常フローに戻る。
   const restorer = new SessionRestorer(inputSessionRepository, messageGateway);
   try {
-    const result = await restorer.restore(config.talkGuildId);
-    if (result.type === "kept") {
-      console.log(
-        `既存セッションを復元: ${result.sessionId} (phase=${result.phase})`
-      );
-    } else if (result.type === "archived") {
-      console.log(
-        `中断セッションを archive: ${result.sessionId} (phase was ${result.interruptedPhase})`
-      );
-    }
+    await restorer.restore(config.talkGuildId);
   } catch (error) {
     console.error("セッション復元エラー:", error);
   }
@@ -187,7 +177,6 @@ function setupDMHandler(client: Client, side: "A" | "B", deps: Deps) {
     }
 
     const content = data.content || "";
-    console.log(`[Bot ${side}] DM受信: ${content.slice(0, 30)}...`);
 
     let dmChannel: DMChannel;
     try {
@@ -211,7 +200,6 @@ function setupDMHandler(client: Client, side: "A" | "B", deps: Deps) {
         () => flushBuffer(bufferKey, side, deps),
         MESSAGE_BUFFER_MS
       );
-      console.log(`[Bot ${side}] バッファに追加（計${existing.texts.length}通）`);
       return;
     }
 
@@ -220,7 +208,6 @@ function setupDMHandler(client: Client, side: "A" | "B", deps: Deps) {
       MESSAGE_BUFFER_MS
     );
     messageBuffers.set(bufferKey, { texts: [content], channel: dmChannel, timer });
-    console.log(`[Bot ${side}] バッファ開始`);
   });
 }
 
@@ -233,7 +220,6 @@ async function flushBuffer(bufferKey: string, side: "A" | "B", deps: Deps) {
   messageBuffers.delete(bufferKey);
   const combinedText = buffered.texts.join("\n");
   const channel = buffered.channel;
-  console.log(`[Bot ${side}] バッファ確定（${buffered.texts.length}通を結合）`);
 
   const previousLock = processingLocks.get(side) || Promise.resolve();
   const currentLock = previousLock.then(async () => {
@@ -261,7 +247,7 @@ async function handleDM(
   const guildId = deps.config.talkGuildId;
   deps.registerDmChannel(side, channel);
 
-  // P1-25: debating/judging フェーズでの「今戦ってる／判定中」案内は
+  // debating/judging フェーズでの「今戦ってる／判定中」案内は
   // DiscordInputCoordinator 側に移譲。リセットを全フェーズで効かせるには
   // ここで早期 return してはいけない（リセット文字列も弾かれてしまうため）。
   await deps.inputCoordinator.handleDirectMessage({
@@ -271,7 +257,7 @@ async function handleDM(
     channel,
   });
 
-  // 【重要】orchestrator は await せずに非同期起動する。
+  // orchestrator は await せずに非同期起動する。
   //   handleDM は side ごとの processingLocks にぶら下がっているため、
   //   ここで await すると「orchestrator が上告待ちでブロック中」→
   //   「上告者本人の DM が同じ side の lock 解放待ちでブロック」→
@@ -293,7 +279,7 @@ async function maybeStartDebate(guildId: string, deps: Deps) {
 
   runningDebates.add(session.id);
   try {
-    await deps.debateOrchestrator.run(session.id);
+    await deps.debateCoordinator.run(session.id);
   } finally {
     runningDebates.delete(session.id);
   }

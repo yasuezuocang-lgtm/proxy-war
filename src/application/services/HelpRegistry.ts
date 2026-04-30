@@ -1,7 +1,7 @@
 import type { SessionPhase } from "../../domain/value-objects/SessionPhase.js";
 import type { ParticipantPhase } from "../../domain/value-objects/ParticipantPhase.js";
 
-// SPEC §7.3 / §7.4: `help` / `ヘルプ` は全フェーズで動き、
+// `help` / `ヘルプ` は全フェーズで動き、
 // 現フェーズで使えるコマンドのみを文脈依存で返す。
 // ここは純関数のみ。ユースケース側が session を見て HelpContext を組み立てる。
 

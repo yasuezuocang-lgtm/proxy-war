@@ -167,7 +167,7 @@ test("judgeRound(supreme) は最終審プロンプトで、過去判決の件数
   assert.match(system, /過去2件/, "過去判決の件数が system に反映");
 });
 
-test("P1-16: 上告審では過去判決を踏まえる旨の指示が system prompt に入る", async () => {
+test("上告審では過去判決を踏まえる旨の指示が system prompt に入る", async () => {
   const districtJudgment: Judgment = {
     winner: "A",
     criteria: [],

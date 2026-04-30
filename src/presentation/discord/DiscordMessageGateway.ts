@@ -13,13 +13,12 @@ export class DiscordMessageGateway implements MessageGateway {
     private readonly talkChannelProviders: Record<TalkSpeaker, TalkChannelProvider>
   ) {}
 
-  async sendDm(side: ParticipantSide, message: string): Promise<void> {
-    const channel = this.dmChannels.get(side);
-    if (!channel) {
-      throw new Error(`${side}側のDMチャンネルが未登録です。`);
-    }
+  async sendDmToA(message: string): Promise<void> {
+    await this.sendDmInternal("A", message);
+  }
 
-    await channel.send(message);
+  async sendDmToB(message: string): Promise<void> {
+    await this.sendDmInternal("B", message);
   }
 
   async sendTalkMessage(
@@ -35,12 +34,30 @@ export class DiscordMessageGateway implements MessageGateway {
     await channel.send(message);
   }
 
-  async sendTyping(side: ParticipantSide): Promise<void> {
+  async sendTypingToA(): Promise<void> {
+    await this.sendTypingInternal("A");
+  }
+
+  async sendTypingToB(): Promise<void> {
+    await this.sendTypingInternal("B");
+  }
+
+  private async sendDmInternal(
+    side: ParticipantSide,
+    message: string
+  ): Promise<void> {
+    const channel = this.dmChannels.get(side);
+    if (!channel) {
+      throw new Error(`${side}側のDMチャンネルが未登録です。`);
+    }
+    await channel.send(message);
+  }
+
+  private async sendTypingInternal(side: ParticipantSide): Promise<void> {
     const channel = this.dmChannels.get(side);
     if (!channel) {
       return;
     }
-
     await channel.sendTyping();
   }
 

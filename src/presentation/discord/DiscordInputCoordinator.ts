@@ -39,7 +39,7 @@ export class DiscordInputCoordinator {
 
     this.dmChannels.set(params.side, params.channel);
 
-    // P1-25 / SPEC §7.4: リセットは全フェーズ最優先で処理する。
+    // リセットは全フェーズ最優先で処理する。
     // hearing の未解決回答・appeal_pending の異議受付・debating/judging の
     // 「観戦中」案内より先にここで捕まえないと、リセット文字列が
     // 誤って別用途に消費されてしまう。
@@ -135,8 +135,7 @@ export class DiscordInputCoordinator {
       return;
     }
 
-    const participant = session.getParticipant(side);
-    const rawText = participant.brief.rawInputs.join("\n");
+    const rawText = session.getAgentMemory(side).rawInputs.join("\n");
     const topic = await this.deps.extractTopic(rawText);
     session.topic = topic;
     await this.deps.sessionRepository.save(session);

@@ -10,9 +10,9 @@ import type {
   TransitionListener,
 } from "./GuidanceMessages.js";
 
-// SPEC §6.8 / P1-15: 上告可能時間（APPEAL_WINDOW_MS）が経過して
+// 上告可能時間（APPEAL_WINDOW_MS）が経過して
 // appeal_pending → finished に遷移した事実を呼び出し側が観測できるようにする
-// ドメインイベント。DebateOrchestrator がこれを受けて #talk への告知や
+// ドメインイベント。DebateCoordinator がこれを受けて #talk への告知や
 // 以後の上告ループ打ち切りに使う。
 export interface AppealExpiredEvent {
   readonly type: "AppealExpired";
@@ -22,7 +22,7 @@ export interface AppealExpiredEvent {
 }
 
 export class SessionStateMachine {
-  // SPEC §7.2 / P1-22: 各遷移時に TransitionEvent を emit して、
+  // 各遷移時に TransitionEvent を emit して、
   // GuidanceMessages.guidanceFor() で案内文に変換させる。
   // listener 未指定ならイベントは黙って捨てる（既存呼び出し側との互換）。
   constructor(private readonly listener?: TransitionListener) {}
@@ -31,7 +31,7 @@ export class SessionStateMachine {
     this.listener?.(event);
   }
 
-  // SPEC §6.9 / P1-26: 全ての遷移で lastActivityAt を更新する。
+  // 全ての遷移で lastActivityAt を更新する。
   // SessionTimeoutChecker はこの値を now() と比較して 24 時間無応答のセッションを
   // 自動アーカイブする。
   private touch(session: Session): void {
@@ -62,7 +62,7 @@ export class SessionStateMachine {
     const participant = session.getParticipant(side);
     this.assertParticipantPhase(participant.phase, ["confirming"]);
     participant.phase = "goal_setting";
-    participant.brief.confirmedAt = Date.now();
+    session.getAgentMemory(side).confirmedAt = Date.now();
     this.touch(session);
     this.emit({ type: "moved_to_goal_setting", side });
   }
@@ -71,7 +71,7 @@ export class SessionStateMachine {
     this.assertSessionPhase(session, ["preparing"]);
     const participant = session.getParticipant(side);
     this.assertParticipantPhase(participant.phase, ["goal_setting"]);
-    participant.brief.goal = goal?.trim() || null;
+    session.getAgentMemory(side).publicGoal = goal?.trim() || null;
     participant.phase = "ready";
 
     const sessionReady = this.areAllParticipantsReady(session);
@@ -168,9 +168,9 @@ export class SessionStateMachine {
     });
   }
 
-  // SPEC §6.8 / P1-15: 上告可能時間（APPEAL_WINDOW_MS）が経過した時に呼ばれる。
+  // 上告可能時間（APPEAL_WINDOW_MS）が経過した時に呼ばれる。
   // appeal_pending → finished に遷移し、AppealExpired イベントを返す。
-  // タイマー駆動側（DebateOrchestrator.handleAppealCycle）は戻り値を観測して
+  // タイマー駆動側（DebateCoordinator.handleAppealCycle）は戻り値を観測して
   // #talk の告知や上告ループ終了を判断する。
   expireAppeal(session: Session): AppealExpiredEvent {
     this.assertSessionPhase(session, ["appeal_pending"]);
@@ -188,9 +188,9 @@ export class SessionStateMachine {
   }
 
   // 異議申し立てを受理して次審級の判定フェーズへ進める。
-  // ※ SPEC §6.8 では「debating で再対話」と定義されているが、
-  //    DebateOrchestrator 側の上告サイクル処理が未追従のため一時的に judging のまま据え置く。
-  //    完全実装は backlog P1-27（debating 遷移＋次審で再対話）で対応する。
+  // ※ 仕様としては「debating で再対話」だが、
+  //    DebateCoordinator 側の上告サイクル処理が未追従のため一時的に judging のまま据え置く。
+  //    完全実装は将来対応（debating 遷移＋次審で再対話）。
   acceptAppeal(session: Session, appeal: Appeal): void {
     this.assertSessionPhase(session, ["appeal_pending"]);
 

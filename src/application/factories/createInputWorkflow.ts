@@ -1,7 +1,6 @@
 import type { SessionRepository } from "../ports/SessionRepository.js";
 import type { LlmGateway } from "../ports/LlmGateway.js";
 import { type AppConfig, loadAppConfig } from "../../config.js";
-import { BriefComposer } from "../services/BriefComposer.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 import { ConfirmBriefUseCase } from "../usecases/ConfirmBriefUseCase.js";
 import { HandleParticipantMessageUseCase } from "../usecases/HandleParticipantMessageUseCase.js";
@@ -23,7 +22,6 @@ export function createInputWorkflow(
   config: AppConfig = loadAppConfig()
 ): InputWorkflow {
   const stateMachine = new SessionStateMachine();
-  const briefComposer = new BriefComposer(llmGateway);
   const startSession = new StartSessionUseCase(
     sessionRepository,
     stateMachine,
@@ -33,13 +31,13 @@ export function createInputWorkflow(
     sessionRepository,
     startSession,
     stateMachine,
-    briefComposer,
+    llmGateway,
     config
   );
   const confirmBrief = new ConfirmBriefUseCase(
     sessionRepository,
     stateMachine,
-    briefComposer
+    llmGateway
   );
   const setGoal = new SetGoalUseCase(sessionRepository, stateMachine);
   const handleParticipantMessage = new HandleParticipantMessageUseCase(

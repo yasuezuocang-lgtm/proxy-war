@@ -1,8 +1,10 @@
 import type { Session } from "../../domain/entities/Session.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
 import type { AppConfig } from "../../config.js";
+import { hasSignificantGaps } from "../../domain/policies/BriefGapPolicy.js";
+import { asOwnBrief } from "../ports/ParticipantAgent.js";
+import type { ParticipantLlmGateway } from "../ports/LlmGateway.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
-import { BriefComposer } from "../services/BriefComposer.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 import { StartSessionUseCase } from "./StartSessionUseCase.js";
 
@@ -24,7 +26,7 @@ export class SubmitInputUseCase {
     private readonly sessionRepository: SessionRepository,
     private readonly startSessionUseCase: StartSessionUseCase,
     private readonly stateMachine: SessionStateMachine,
-    private readonly briefComposer: BriefComposer,
+    private readonly llmGateway: ParticipantLlmGateway,
     private readonly config: AppConfig
   ) {}
 
@@ -35,10 +37,11 @@ export class SubmitInputUseCase {
       side: input.side,
     });
     const participant = session.getParticipant(input.side);
+    const memory = session.getAgentMemory(input.side);
 
-    participant.brief.rawInputs.push(trimmedMessage);
+    memory.rawInputs.push(trimmedMessage);
 
-    const totalLength = participant.brief.rawInputs.join("").length;
+    const totalLength = memory.rawInputs.join("").length;
     if (totalLength < this.config.input.minInputLength) {
       await this.sessionRepository.save(session);
       return {
@@ -50,17 +53,18 @@ export class SubmitInputUseCase {
     }
 
     const brief = await this.composeBrief(session, input.side);
-    participant.brief.structuredContext = brief.structuredContext;
-    participant.brief.summary = brief.summary;
+    this.assignPrivateBrief(session, input.side, brief.structuredContext);
+    memory.briefSummary = brief.summary;
 
     if (
-      this.briefComposer.hasSignificantGaps(brief.structuredContext) &&
+      hasSignificantGaps(brief.structuredContext) &&
       participant.followUpCount < this.config.input.maxProbeQuestions
     ) {
       participant.followUpCount++;
-      const probe = await this.briefComposer.generateProbe(
-        brief.structuredContext
-      );
+      const probe = await this.llmGateway.generateProbe({
+        side: input.side,
+        structuredContext: brief.structuredContext,
+      });
       await this.sessionRepository.save(session);
 
       return {
@@ -82,11 +86,25 @@ export class SubmitInputUseCase {
     };
   }
 
-  private async composeBrief(
+  private async composeBrief(session: Session, side: ParticipantSide) {
+    const memory = session.getAgentMemory(side);
+    return this.llmGateway.extractBrief({
+      side,
+      rawInputs: memory.rawInputs,
+    });
+  }
+
+  // privateBrief の OwnBrief<Side> ブランドを保つため、side 値で型 narrow した上で
+  // asOwnBrief を経由して代入する。
+  private assignPrivateBrief(
     session: Session,
-    side: ParticipantSide
-  ) {
-    const participant = session.getParticipant(side);
-    return this.briefComposer.composeFromRawInputs(participant.brief.rawInputs);
+    side: ParticipantSide,
+    structuredContext: string
+  ): void {
+    if (side === "A") {
+      session.agentMemoryA.privateBrief = asOwnBrief("A", structuredContext);
+      return;
+    }
+    session.agentMemoryB.privateBrief = asOwnBrief("B", structuredContext);
   }
 }

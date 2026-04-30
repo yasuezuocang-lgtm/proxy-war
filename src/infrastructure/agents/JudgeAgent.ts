@@ -8,14 +8,14 @@ import {
   buildJudgeUserPrompt,
 } from "./prompts/judge-agent.js";
 
-// 審判エージェント（SPEC §8.2 — "interface JudgeAgent { judgeRound(input): Promise<Judgment>; }"）。
+// 審判エージェント（judgeRound(input): Promise<Judgment>）。
 // - A代理人・B代理人とは独立のクラス。コードは共有しない
-// - 裁判官らしい丁寧調のプロンプトを使う（SPEC §7.5）
+// - 裁判官らしい丁寧調のプロンプトを使う
 // - 過去判決を入力として受け取り、第一審 / 再審 / 最終審のどの段でも動く
 // - このクラスは判定専用。対話ターン生成 / ヒアリング判定は行わない
 //
-// P1-16 以降で DebateCoordinator から直接呼ばれる想定。現状は
-// RefereeLlmGateway 経由の判定と並行して存在する（P1-7 で集約する）。
+// DebateCoordinator から直接呼ばれる想定。現状は
+// RefereeLlmGateway 経由の判定と並行して存在する。
 export class JudgeAgent {
   readonly personality: AgentPersonality = JUDGE_AGENT_PERSONALITY;
 

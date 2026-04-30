@@ -109,7 +109,7 @@ test("入力から確認、ゴール設定まで進める", async () => {
   assert.equal(goal.handledBy, "set_goal");
   assert.equal(goal.participantReady, true);
   assert.equal(goal.sessionReady, false);
-  assert.equal(goal.session.getParticipant("A").brief.goal, "謝ってほしい");
+  assert.equal(goal.session.agentMemoryA.publicGoal, "謝ってほしい");
 });
 
 test("両者の準備完了でセッションが ready になる", async () => {
@@ -313,7 +313,7 @@ test("help コマンドはセッション未作成でも文脈に合う案内を
   assert.match(inConfirming.reply, /「はい」で要約を確定/);
 });
 
-test("英語・大文字の yes / goal: / skip コマンドも受け付ける（SPEC §7.4）", async () => {
+test("英語・大文字の yes / goal: / skip コマンドも受け付ける", async () => {
   const repository = new InMemorySessionRepository();
   const workflow = createInputWorkflow(repository, new FakeLlmGateway());
 
@@ -345,7 +345,7 @@ test("英語・大文字の yes / goal: / skip コマンドも受け付ける（
   if (goalMixed.handledBy === "set_goal") {
     assert.equal(goalMixed.participantReady, true);
     assert.equal(
-      goalMixed.session.getParticipant("A").brief.goal,
+      goalMixed.session.agentMemoryA.publicGoal,
       "talk it out"
     );
   }
@@ -373,11 +373,11 @@ test("英語・大文字の yes / goal: / skip コマンドも受け付ける（
   assert.equal(skipUpper.handledBy, "set_goal");
   if (skipUpper.handledBy === "set_goal") {
     assert.equal(skipUpper.participantReady, true);
-    assert.equal(skipUpper.session.getParticipant("A").brief.goal, null);
+    assert.equal(skipUpper.session.agentMemoryA.publicGoal, null);
   }
 });
 
-test("help コマンドは HELP / Help など大文字でも動く（SPEC §7.4）", async () => {
+test("help コマンドは HELP / Help など大文字でも動く", async () => {
   const repository = new InMemorySessionRepository();
   const workflow = createInputWorkflow(repository, new FakeLlmGateway());
 

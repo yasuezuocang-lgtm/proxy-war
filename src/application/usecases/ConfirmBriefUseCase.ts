@@ -1,8 +1,9 @@
 import { DomainError } from "../../domain/errors/DomainError.js";
 import type { Session } from "../../domain/entities/Session.js";
 import type { ParticipantSide } from "../../domain/entities/Participant.js";
+import { asOwnBrief } from "../ports/ParticipantAgent.js";
+import type { ParticipantLlmGateway } from "../ports/LlmGateway.js";
 import type { SessionRepository } from "../ports/SessionRepository.js";
-import { BriefComposer } from "../services/BriefComposer.js";
 import { SessionStateMachine } from "../services/SessionStateMachine.js";
 
 const MAX_CONFIRMATION_REVISIONS = 5;
@@ -31,7 +32,7 @@ export class ConfirmBriefUseCase {
   constructor(
     private readonly sessionRepository: SessionRepository,
     private readonly stateMachine: SessionStateMachine,
-    private readonly briefComposer: BriefComposer
+    private readonly llmGateway: ParticipantLlmGateway
   ) {}
 
   async execute(input: ConfirmBriefInput): Promise<ConfirmBriefOutput> {
@@ -41,6 +42,7 @@ export class ConfirmBriefUseCase {
     }
 
     const participant = session.getParticipant(input.side);
+    const memory = session.getAgentMemory(input.side);
     const normalized = input.message.trim().toLowerCase();
 
     if (normalized === "はい" || normalized === "yes" || normalized === "ok") {
@@ -67,22 +69,23 @@ export class ConfirmBriefUseCase {
     }
     const correction = extractedCorrection;
 
-    participant.brief.rawInputs.push(correction);
+    memory.rawInputs.push(correction);
 
     if (participant.followUpCount < MAX_CONFIRMATION_REVISIONS) {
       participant.followUpCount++;
 
-      if (!participant.brief.structuredContext) {
+      if (!memory.privateBrief) {
         throw new DomainError("確認対象のブリーフが存在しません。");
       }
 
-      const brief = await this.briefComposer.composeFromRawInputs(
-        participant.brief.rawInputs
-      );
+      const brief = await this.llmGateway.extractBrief({
+        side: input.side,
+        rawInputs: memory.rawInputs,
+      });
 
-      participant.brief.structuredContext = brief.structuredContext;
+      this.assignPrivateBrief(session, input.side, brief.structuredContext);
       const summary = this.ensureCorrectionReflected(brief.summary, correction);
-      participant.brief.summary = summary;
+      memory.briefSummary = summary;
       await this.sessionRepository.save(session);
 
       return {
@@ -103,6 +106,20 @@ export class ConfirmBriefUseCase {
       confirmed: true,
       movedToGoalSetting: true,
     };
+  }
+
+  // privateBrief は OwnBrief<Side> ブランド付き。string の直接代入を弾くため
+  // side 値で型 narrow して asOwnBrief を経由させる。
+  private assignPrivateBrief(
+    session: Session,
+    side: ParticipantSide,
+    structuredContext: string
+  ): void {
+    if (side === "A") {
+      session.agentMemoryA.privateBrief = asOwnBrief("A", structuredContext);
+      return;
+    }
+    session.agentMemoryB.privateBrief = asOwnBrief("B", structuredContext);
   }
 
   private extractCorrection(message: string): string | null {

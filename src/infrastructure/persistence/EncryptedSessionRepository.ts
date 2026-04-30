@@ -4,20 +4,25 @@ import { readFile, writeFile } from "fs/promises";
 import { resolve, join } from "path";
 
 import type { SessionRepository } from "../../application/ports/SessionRepository.js";
+import { asOwnBrief } from "../../application/ports/ParticipantAgent.js";
 import { Session } from "../../domain/entities/Session.js";
+import { AgentMemory } from "../../domain/entities/AgentMemory.js";
 import { DebateRound } from "../../domain/entities/DebateRound.js";
 import { Participant, type ParticipantSide } from "../../domain/entities/Participant.js";
 import { SessionPolicy } from "../../domain/policies/SessionPolicy.js";
-import type { Brief } from "../../domain/entities/Brief.js";
 import type { DebateTurn } from "../../domain/entities/DebateTurn.js";
 import type { HearingRequest } from "../../domain/entities/HearingRequest.js";
 import type { Judgment } from "../../domain/entities/Judgment.js";
 import type { Appeal } from "../../domain/entities/Appeal.js";
+import type {
+  HearingExchange,
+  StrategyNote,
+} from "../../domain/entities/AgentContext.js";
 import type { SessionPhase } from "../../domain/value-objects/SessionPhase.js";
 import type { CourtLevel } from "../../domain/value-objects/CourtLevel.js";
 import type { ParticipantPhase } from "../../domain/value-objects/ParticipantPhase.js";
 
-// SPEC §6.9 / §9: セッションを AES-256-GCM で暗号化してローカル保存する。
+// セッションを AES-256-GCM で暗号化してローカル保存する。
 // 鍵は hex (64文字 = 32 byte) または 32 byte の生文字列。未起動時は constructor で拒否。
 // 保存先は既定 data/sessions/（.gitignore 済み）。1 セッション = 1 ファイル ({sessionId}.enc)。
 
@@ -32,12 +37,20 @@ interface EncryptedPayload {
   version: 1;
 }
 
-interface SerializedBrief {
-  rawInputs: string[];
-  structuredContext: string | null;
-  summary: string | null;
+// Step 5 / migration-plan §3 Step 5: Participant.brief を廃して AgentMemory に集約。
+// privateBrief は OwnBrief<Side> ブランドだが、永続化には plain string で書き出し、
+// 復元時に side で型 narrow して asOwnBrief を経由する。
+interface SerializedAgentMemory {
+  side: ParticipantSide;
+  principalId: string;
+  privateBrief: string;
+  privateGoal: string | null;
+  publicGoal: string | null;
+  briefSummary: string | null;
   confirmedAt: number | null;
-  goal: string | null;
+  rawInputs: string[];
+  strategyNotes: StrategyNote[];
+  hearingHistory: HearingExchange[];
 }
 
 interface SerializedParticipant {
@@ -45,7 +58,6 @@ interface SerializedParticipant {
   userId: string | null;
   botId: string | null;
   phase: ParticipantPhase;
-  brief: SerializedBrief;
   followUpCount: number;
 }
 
@@ -79,6 +91,8 @@ interface SerializedSession {
     A: SerializedParticipant;
     B: SerializedParticipant;
   };
+  agentMemoryA: SerializedAgentMemory;
+  agentMemoryB: SerializedAgentMemory;
   rounds: SerializedRound[];
   activeHearing: HearingRequest | null;
 }
@@ -229,6 +243,8 @@ function serializeSession(session: Session): SerializedSession {
       A: serializeParticipant(session.participants.A),
       B: serializeParticipant(session.participants.B),
     },
+    agentMemoryA: serializeAgentMemory(session.agentMemoryA),
+    agentMemoryB: serializeAgentMemory(session.agentMemoryB),
     rounds: session.rounds.map(serializeRound),
     activeHearing: session.activeHearing,
   };
@@ -240,14 +256,24 @@ function serializeParticipant(p: Participant): SerializedParticipant {
     userId: p.userId,
     botId: p.botId,
     phase: p.phase,
-    brief: {
-      rawInputs: [...p.brief.rawInputs],
-      structuredContext: p.brief.structuredContext,
-      summary: p.brief.summary,
-      confirmedAt: p.brief.confirmedAt,
-      goal: p.brief.goal,
-    },
     followUpCount: p.followUpCount,
+  };
+}
+
+function serializeAgentMemory<Side extends ParticipantSide>(
+  memory: AgentMemory<Side>
+): SerializedAgentMemory {
+  return {
+    side: memory.side,
+    principalId: memory.principalId,
+    privateBrief: memory.privateBrief,
+    privateGoal: memory.privateGoal,
+    publicGoal: memory.publicGoal,
+    briefSummary: memory.briefSummary,
+    confirmedAt: memory.confirmedAt,
+    rawInputs: [...memory.rawInputs],
+    strategyNotes: memory.strategyNotes.map((note) => ({ ...note })),
+    hearingHistory: memory.hearingHistory.map((entry) => ({ ...entry })),
   };
 }
 
@@ -285,6 +311,8 @@ function restoreSession(s: SerializedSession): Session {
 
   restoreParticipant(session.participants.A, s.participants.A);
   restoreParticipant(session.participants.B, s.participants.B);
+  restoreAgentMemory("A", session.agentMemoryA, s.agentMemoryA);
+  restoreAgentMemory("B", session.agentMemoryB, s.agentMemoryB);
 
   for (const raw of s.rounds) {
     const round = new DebateRound({
@@ -307,16 +335,31 @@ function restoreSession(s: SerializedSession): Session {
 function restoreParticipant(target: Participant, src: SerializedParticipant): void {
   target.phase = src.phase;
   target.followUpCount = src.followUpCount;
-  const brief: Brief = {
-    rawInputs: [...src.brief.rawInputs],
-    structuredContext: src.brief.structuredContext,
-    summary: src.brief.summary,
-    confirmedAt: src.brief.confirmedAt,
-    goal: src.brief.goal,
-  };
-  target.brief = brief;
   // userId/botId/side は Participant で readonly なので Session 作成時に復元し直す必要があるが、
   // 現 Session 実装では Participant は side のみで空生成されるため userId/botId を同期する。
   (target as unknown as { userId: string | null }).userId = src.userId;
   (target as unknown as { botId: string | null }).botId = src.botId;
+}
+
+function restoreAgentMemory<Side extends ParticipantSide>(
+  side: Side,
+  target: AgentMemory<Side>,
+  src: SerializedAgentMemory
+): void {
+  // principalId は readonly。Session 作成時に "" で初期化されているので、
+  // 永続値で上書きするには readonly キャストが必要（既存 userId/botId と同方針）。
+  (target as unknown as { principalId: string }).principalId = src.principalId;
+  target.privateBrief = asOwnBrief(side, src.privateBrief);
+  target.privateGoal = src.privateGoal;
+  target.publicGoal = src.publicGoal;
+  target.briefSummary = src.briefSummary;
+  target.confirmedAt = src.confirmedAt;
+  target.rawInputs.length = 0;
+  target.rawInputs.push(...src.rawInputs);
+  target.strategyNotes.length = 0;
+  target.strategyNotes.push(...src.strategyNotes.map((note) => ({ ...note })));
+  target.hearingHistory.length = 0;
+  target.hearingHistory.push(
+    ...src.hearingHistory.map((entry) => ({ ...entry }))
+  );
 }

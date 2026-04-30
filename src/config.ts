@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// SPEC §9「読み込み方」準拠:
+// 環境変数読み込みポリシー:
 // デフォルトで `.env` を読み、`NODE_ENV=test` または `--test` フラグ指定時のみ
 // `.env.test` を override 読み込みして上書きマージする。
 // 全ての定数は config モジュール経由で読むこと（直接 process.env を叩かない）。
@@ -65,9 +65,9 @@ export interface Config {
   encryptionKey: string;
 }
 
-// SPEC §9 で定義された数値・閾値を一元管理する型。
-// 既存の SubmitInputUseCase / StartSessionUseCase / DebateOrchestrator は
-// まだ自前のハードコード値を持っている。次タスク（P0-2b）でこれらを
+// 数値・閾値を一元管理する型。
+// 既存の SubmitInputUseCase / StartSessionUseCase / DebateCoordinator は
+// まだ自前のハードコード値を持っている。将来的にこれらを
 // loadAppConfig() 経由に差し替える。
 export interface AppConfig {
   debate: {
@@ -99,7 +99,7 @@ export interface AppConfig {
   };
 }
 
-// SPEC §9 の本番デフォルト値。`.env` が未定義の場合はこれが使われる。
+// 本番デフォルト値。`.env` が未定義の場合はこれが使われる。
 export const APP_CONFIG_DEFAULTS: AppConfig = {
   debate: {
     maxTurnsPerRound: 8,

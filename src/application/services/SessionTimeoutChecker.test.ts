@@ -13,18 +13,26 @@ class RecordingMessageGateway implements MessageGateway {
   readonly talks: string[] = [];
   failOnSides: ("A" | "B")[] = [];
 
-  async sendDm(side: "A" | "B", message: string): Promise<void> {
-    if (this.failOnSides.includes(side)) {
-      throw new Error(`${side} DM 未登録`);
+  async sendDmToA(message: string): Promise<void> {
+    if (this.failOnSides.includes("A")) {
+      throw new Error("A DM 未登録");
     }
-    this.dms.push({ side, message });
+    this.dms.push({ side: "A", message });
+  }
+
+  async sendDmToB(message: string): Promise<void> {
+    if (this.failOnSides.includes("B")) {
+      throw new Error("B DM 未登録");
+    }
+    this.dms.push({ side: "B", message });
   }
 
   async sendTalkMessage(message: string): Promise<void> {
     this.talks.push(message);
   }
 
-  async sendTyping(): Promise<void> {}
+  async sendTypingToA(): Promise<void> {}
+  async sendTypingToB(): Promise<void> {}
 }
 
 class StubSessionRepository

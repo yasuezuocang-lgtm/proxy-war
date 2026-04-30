@@ -5,7 +5,7 @@ import type { ParticipantSide } from "./Participant.js";
 // 異議申し立て: 前審の判定に納得しない側が、次審の審判に渡す材料。
 // 再審AI・最終審AIはこの内容と過去判定を踏まえて再評価する。
 //
-// SPEC §6.8 準拠。createAppeal() ファクトリ経由で生成すると SPEC のバリデーション
+// createAppeal() ファクトリ経由で生成するとドメインバリデーション
 // （引き分け禁止 / 最高裁からの上告禁止 / 勝者の上告禁止）が全て走る。
 // 既存の直接構築（{ appellantSide, content, createdAt } のみの plain-object）
 // との後方互換のため、新フィールドは optional にしてある。将来 createAppeal に
@@ -14,7 +14,7 @@ export interface Appeal {
   appellantSide: ParticipantSide;
   content: string;
   createdAt: number;
-  // SPEC §6.8 に従って createAppeal() が常に設定するフィールド群。
+  // createAppeal() が常に設定するフィールド群。
   appealedBy?: ParticipantSide;
   appealedAt?: number;
   courtLevel?: CourtLevel; // この上告が進む先の審級（district→high, high→supreme）
@@ -35,7 +35,7 @@ export function nextCourtLevel(current: CourtLevel): CourtLevel | null {
   return null;
 }
 
-// SPEC §6.8 に従って Appeal を生成する。呼び出し元はこの関数を経由することで
+// Appeal を生成する。呼び出し元はこの関数を経由することで
 // バリデーションを通過済みの Appeal を得る。
 export function createAppeal(input: CreateAppealInput): Appeal {
   if (input.winner === "draw") {

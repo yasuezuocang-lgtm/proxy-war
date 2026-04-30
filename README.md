@@ -108,19 +108,42 @@ npm run dev
 
 ## アーキテクチャ
 
-現在の実装はレイヤード構成で整理されています。
+A 側・B 側の代理人を完全に分離した 5 層構成（2026-04 リファクタ完了）。
 
-- `src/presentation`: Discord連携
-- `src/application`: ユースケースと対話オーケストレーション
-- `src/domain`: セッション、参加者、ラウンド、判定などのドメインモデル
-- `src/infrastructure`: LLM実装とリポジトリ実装
+```
+src/
+  presentation/     # Discord SDK 連携・メッセージビルダー
+  application/
+    coordinators/   # DebateCoordinator（司会のみ・200行未満）
+    usecases/       # Start/ProcessAgentTurn/SubmitHearingAnswer/JudgeRound/RunAppealCycle/SendConsolation
+    services/       # SessionStateMachine / SessionRestorer / SessionTimeoutChecker
+    ports/          # SessionRepository / MessageGateway / ParticipantAgent / ParticipantLlmGateway
+    factories/      # 依存配線
+  domain/
+    entities/       # Session / DebateRound / AgentMemory<Side> / Judgment 等
+    value-objects/  # CourtLevel / SessionPhase / OpponentPublicView 等
+    policies/       # SessionPolicy / IsolationPolicy / BriefGapPolicy
+  infrastructure/
+    agents/         # AAgent / BAgent / JudgeAgent（コードを共有しない独立実装）
+    llm/            # PromptDrivenLlmGateway / PromptCatalog（A/B プロンプト分離）
+    persistence/    # InMemorySessionRepository / EncryptedSessionRepository
+```
 
 主な入口:
 
 - 起動: `src/index.ts`
-- Discord受信: `src/bot/client.ts`
-- 入力フロー: `src/application/usecases/*`
-- 対話進行: `src/application/services/DebateOrchestrator.ts`
+- Discord 受信: `src/bot/client.ts`（DM バッファリング、対話自動起動）
+- 入力フロー: `src/application/usecases/Submit*` / `Confirm*` / `SetGoal*`
+- 対話進行: `src/application/coordinators/DebateCoordinator.ts`（UseCase 群を呼ぶだけ）
+- 代理人ロジック: `src/infrastructure/agents/AAgent.ts` / `BAgent.ts`
+- 判定: `src/infrastructure/agents/JudgeAgent.ts`
+
+### A/B 完全分離
+
+- 型レベル: `OwnBrief<Side>` ブランドで brief 文字列を side タグ付け
+- ドメイン: `Session.agentMemoryA` / `agentMemoryB` を別インスタンスで保持
+- ランタイム: `IsolationPolicy.assertOwnBriefAccess` を agent の各メソッド冒頭で呼ぶ
+- 詳細: `docs/adr/0001-ab-agent-isolation.md`
 
 ## ライセンス
 
@@ -128,4 +151,5 @@ MIT
 
 ## 再構築ドキュメント
 
-- `docs/rebuild/README.md`
+- `docs/rebuild/README.md` — 仕様正本（vision / requirements / architecture / use-cases / agents / gap-analysis / migration-plan）
+- `docs/adr/` — アーキテクチャ意思決定記録（ADR）

@@ -10,10 +10,14 @@ class RecordingGateway implements MessageGateway {
   readonly dmTypings: ("A" | "B")[] = [];
   readonly talkTypings: (TalkSpeaker | undefined)[] = [];
 
-  async sendDm(): Promise<void> {}
+  async sendDmToA(): Promise<void> {}
+  async sendDmToB(): Promise<void> {}
   async sendTalkMessage(): Promise<void> {}
-  async sendTyping(side: "A" | "B"): Promise<void> {
-    this.dmTypings.push(side);
+  async sendTypingToA(): Promise<void> {
+    this.dmTypings.push("A");
+  }
+  async sendTypingToB(): Promise<void> {
+    this.dmTypings.push("B");
   }
   async sendTalkTyping(speaker?: TalkSpeaker): Promise<void> {
     this.talkTypings.push(speaker);
@@ -24,10 +28,14 @@ class RecordingGateway implements MessageGateway {
 class DmOnlyGateway implements MessageGateway {
   readonly dmTypings: ("A" | "B")[] = [];
 
-  async sendDm(): Promise<void> {}
+  async sendDmToA(): Promise<void> {}
+  async sendDmToB(): Promise<void> {}
   async sendTalkMessage(): Promise<void> {}
-  async sendTyping(side: "A" | "B"): Promise<void> {
-    this.dmTypings.push(side);
+  async sendTypingToA(): Promise<void> {
+    this.dmTypings.push("A");
+  }
+  async sendTypingToB(): Promise<void> {
+    this.dmTypings.push("B");
   }
 }
 
@@ -186,9 +194,14 @@ test("TypingIndicator: sendTalkTyping 未実装 gateway でも落ちない", asy
 test("TypingIndicator: sendTyping が throw しても operation は継続する", async () => {
   class ThrowingGateway implements MessageGateway {
     sendCount = 0;
-    async sendDm(): Promise<void> {}
+    async sendDmToA(): Promise<void> {}
+    async sendDmToB(): Promise<void> {}
     async sendTalkMessage(): Promise<void> {}
-    async sendTyping(): Promise<void> {
+    async sendTypingToA(): Promise<void> {
+      this.sendCount++;
+      throw new Error("rate limit");
+    }
+    async sendTypingToB(): Promise<void> {
       this.sendCount++;
       throw new Error("rate limit");
     }

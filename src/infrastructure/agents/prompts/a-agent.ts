@@ -2,9 +2,9 @@ import type { AgentPersonality } from "../../../domain/entities/AgentContext.js"
 import type { CourtLevel } from "../../../domain/value-objects/CourtLevel.js";
 import { COURT_LABELS } from "../../../domain/value-objects/CourtLevel.js";
 
-// A代理人の人格メタデータ（SPEC §8.3）。
+// A代理人の人格メタデータ。
 // B代理人・審判とは別人格・別記憶。ここから派生する prompt は全て A 専用。
-// B 側のプロンプト実装（P1-4 の prompts/b-agent.ts）とは独立に育てる前提。
+// B 側のプロンプト実装（prompts/b-agent.ts）とは独立に育てる前提。
 export const A_AGENT_PERSONALITY: AgentPersonality = {
   id: "a-agent-v1",
   label: "A代理人",
@@ -16,7 +16,7 @@ export const A_AGENT_PERSONALITY: AgentPersonality = {
 };
 
 // ヒアリング発動の表現。A代理専用の記法。
-// reason を必須化するのは SPEC H5（質問理由の併記）のため。
+// reason を必須化するのは質問理由の併記のため。
 export const A_HEARING_PATTERN = /^\s*\[HEARING:(.+?)(?:\|(.+?))?\]\s*$/s;
 
 export interface BuildASystemPromptParams {
@@ -27,7 +27,7 @@ export interface BuildASystemPromptParams {
 }
 
 // A代理の system prompt を一から組む。
-// BAgent 側とはプロンプト本文を共有しない（SPEC §8.2・P1-4 制約）。
+// BAgent 側とはプロンプト本文を共有しない（コード非共有制約）。
 export function buildASystemPrompt(params: BuildASystemPromptParams): string {
   const parts: string[] = [];
 
