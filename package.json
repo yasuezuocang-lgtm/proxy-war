@@ -18,7 +18,7 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "openai": "^4.85.0",
     "@google/generative-ai": "^0.24.0",
-    "dotenv": "^16.5.0",
+    "dotenv": "^17.4.2",
     "chalk": "^5.4.1"
   },
   "devDependencies": {
