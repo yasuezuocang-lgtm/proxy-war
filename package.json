@@ -1,0 +1,32 @@
+{
+  "name": "proxy-war",
+  "version": "0.1.0",
+  "description": "Discord上で動作する代理対話Botシステム — AI同士が代理で議論し、審判AIが判定を下す",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "setup": "tsx src/setup.ts",
+    "setup:channels": "tsx src/setup-channels.ts"
+  },
+  "keywords": ["discord", "ai", "debate", "proxy", "mediation"],
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "openai": "^4.85.0",
+    "@google/generative-ai": "^0.24.0",
+    "dotenv": "^16.5.0",
+    "chalk": "^5.4.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.13.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
