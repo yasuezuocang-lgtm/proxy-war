@@ -16,7 +16,7 @@
   "dependencies": {
     "discord.js": "^14.18.0",
     "@anthropic-ai/sdk": "^0.39.0",
-    "openai": "^4.85.0",
+    "openai": "^6.35.0",
     "@google/generative-ai": "^0.24.0",
     "dotenv": "^16.5.0",
     "chalk": "^5.4.1"
