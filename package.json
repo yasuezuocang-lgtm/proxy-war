@@ -14,7 +14,7 @@
   "keywords": ["discord", "ai", "debate", "proxy", "mediation"],
   "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.18.0",
+    "discord.js": "^14.26.4",
     "@anthropic-ai/sdk": "^0.39.0",
     "openai": "^4.85.0",
     "@google/generative-ai": "^0.24.0",
